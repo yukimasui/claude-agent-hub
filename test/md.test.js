@@ -1,7 +1,7 @@
 // public/md.js のテストです。ブラウザ用のモジュールですが、renderMarkdown / inline / esc は DOM を使わないので Node から呼べます。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { esc, inline, renderMarkdown } from '../public/md.js';
+import { esc, inline, renderMarkdown, retryingLoader } from '../public/md.js';
 
 const LINK = (href, text) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${text}</a>`;
 
@@ -82,4 +82,47 @@ test('proposals ブロックの補足は HTML として解釈しない', () => {
   assert.doesNotMatch(html, /<img|<b>太字/);
   assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
   assert.match(html, /<li>&lt;b&gt;太字&lt;\/b&gt;<\/li>/);
+});
+
+test('retryingLoader は失敗した読み込みを保持せず、間隔を空けて再試行する', async () => {
+  let t = 0;
+  let calls = 0;
+  let fail = true;
+  const load = retryingLoader(
+    async () => {
+      calls++;
+      if (fail) throw new Error('読み込み失敗');
+      return 'ok';
+    },
+    { retryAfterMs: 10_000, now: () => t },
+  );
+  await assert.rejects(load());
+  assert.equal(calls, 1);
+  // 失敗の直後は、描画のたびに要求を繰り返さないよう、読み込まずに失敗を返します
+  t = 5_000;
+  await assert.rejects(load());
+  assert.equal(calls, 1);
+  // 間隔を空けた後は再試行し、成功した結果はその後も使い回します
+  t = 10_000;
+  fail = false;
+  assert.equal(await load(), 'ok');
+  assert.equal(calls, 2);
+  assert.equal(await load(), 'ok');
+  assert.equal(calls, 2);
+});
+
+test('retryingLoader は読み込み中の要求を 1 つにまとめる', async () => {
+  let calls = 0;
+  let release;
+  const load = retryingLoader(() => {
+    calls++;
+    return new Promise((r) => (release = r));
+  });
+  const a = load();
+  const b = load();
+  // 読み込みは次のマイクロタスクで始まるため、始まるのを待ってから完了させます
+  await new Promise((r) => setImmediate(r));
+  release('ok');
+  assert.deepEqual(await Promise.all([a, b]), ['ok', 'ok']);
+  assert.equal(calls, 1);
 });

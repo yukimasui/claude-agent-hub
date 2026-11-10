@@ -190,7 +190,7 @@ export function renderMarkdown(src) {
 // ESM 版は多数のチャンクに分かれているので、1 ファイルで完結する UMD 版を <script> で読み込み、window.mermaid を使います。
 export const MERMAID_SRC = '/vendor/mermaid/mermaid.min.js';
 const svgCache = new Map();
-let mermaidPromise = null;
+
 let seq = 0;
 
 /** classic script として読み込みます。UMD 版は ES モジュールとしては読めないため、import() ではなく <script> を使います */
@@ -208,15 +208,38 @@ function loadScript(src) {
   });
 }
 
-function loadMermaid() {
-  mermaidPromise ||= loadScript(MERMAID_SRC).then(() => {
+/**
+ * 読み込み処理を包み、成功した結果は使い回し、失敗した結果は保持しないようにします。
+ * 失敗した Promise を保持し続けると、サーバの再起動中などの一時的な失敗の後も、
+ * ページを再読み込みするまで図がコードのまま表示されてしまうためです。
+ * 失敗の直後は retryAfterMs が経つまで読み込まずに失敗を返し、描画のたびに要求を繰り返さないようにします。
+ * テストできるよう DOM に触れない形にしています。
+ */
+export function retryingLoader(load, { retryAfterMs = 10_000, now = () => Date.now() } = {}) {
+  let pending = null;
+  let failedAt = -Infinity;
+  return () => {
+    if (pending) return pending;
+    if (now() - failedAt < retryAfterMs) return Promise.reject(new Error('読み込みに失敗したため、時間をおいて再試行します'));
+    pending = Promise.resolve()
+      .then(load)
+      .catch((e) => {
+        pending = null;
+        failedAt = now();
+        throw e;
+      });
+    return pending;
+  };
+}
+
+const loadMermaid = retryingLoader(() =>
+  loadScript(MERMAID_SRC).then(() => {
     const m = window.mermaid;
     if (!m) throw new Error('mermaid が見つかりません');
     m.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
     return m;
-  });
-  return mermaidPromise;
-}
+  }),
+);
 
 /** 描画後に mermaid ブロックを図へ置き換えるにゃ */
 export async function hydrate(root) {
