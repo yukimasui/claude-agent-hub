@@ -1,7 +1,7 @@
 // Agent Hub フロントエンドにゃ
 import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
-import { catCanvas, mountCats, updateCat } from './cats.js';
+import { catAnimationEnabled, catCanvas, mountCats, setCatAnimation, updateCat } from './cats.js';
 import { renderQueue } from './queue.js';
 import { findOpenProposals, isDone, openBoard, parseProposals } from './triage.js';
 
@@ -542,6 +542,17 @@ if ('Notification' in window && Notification.permission === 'default') {
     b.hidden = true;
   });
 }
+
+// 猫のアニメーションの切り替えです（設定はブラウザに保存されます）
+const catAnimButton = $('#btn-cat-anim');
+const labelCatAnim = () => {
+  catAnimButton.textContent = `猫のアニメーション: ${catAnimationEnabled() ? 'オン' : 'オフ'}`;
+};
+labelCatAnim();
+catAnimButton.addEventListener('click', () => {
+  setCatAnimation(!catAnimationEnabled());
+  labelCatAnim();
+});
 
 document.addEventListener('keydown', (e) => {
   if ($('#dlg-new').open || !e.altKey) return;

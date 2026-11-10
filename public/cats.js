@@ -242,7 +242,32 @@ function scene(mood, t, w, h) {
 
 const live = new Set();
 let tick = 0;
-const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+
+// アニメーションのオン / オフは画面の切り替えで決め、ブラウザに保存します。
+// OS の「動きを減らす」設定（prefers-reduced-motion）に従うと、状態の変化が分かりにくい静止画になるため、
+// 既定では従わずにアニメーションさせます。
+const ANIMATION_KEY = 'hub.catAnimation';
+let animate = true;
+try {
+  animate = localStorage.getItem(ANIMATION_KEY) !== 'off';
+} catch {
+  // ストレージが使えない環境では既定（オン）のままにします
+}
+
+export function catAnimationEnabled() {
+  return animate;
+}
+
+/** アニメーションのオン / オフを切り替えて保存し、表示中の猫をすぐに描き直します */
+export function setCatAnimation(on) {
+  animate = !!on;
+  try {
+    localStorage.setItem(ANIMATION_KEY, animate ? 'on' : 'off');
+  } catch {
+    // 保存できなくても、この画面では切り替えを反映します
+  }
+  for (const c of live) if (c.isConnected) render(c);
+}
 
 function render(canvas) {
   const ctx = canvas.getContext('2d');
@@ -251,7 +276,7 @@ function render(canvas) {
   const scale = canvas.width / w;
   const mood = moodOf({ state: canvas.dataset.state, activity: canvas.dataset.activity, since: canvas.dataset.since });
   const coat = coatOf(canvas.dataset.seed, canvas.dataset.coat);
-  const t = reduceMotion?.matches ? 0 : tick;
+  const t = animate ? tick : 0;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   ctx.imageSmoothingEnabled = false;
   for (const op of scene(mood, t, w, h)) {
