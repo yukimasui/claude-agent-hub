@@ -18,11 +18,38 @@ export const DECISIONS = [
  * サーバもキューを一時停止するかどうかをこの関数で判定するため、DOM や Node 専用の API は使いません。
  */
 export function parseProposals(text) {
-  for (const m of String(text || '').matchAll(/```proposals[^\n]*\n([\s\S]*?)```/g)) {
-    const p = parseBlock(m[1].trim());
-    if (p) return p;
+  const src = String(text || '');
+  const open = /```proposals[^\n]*\n/g;
+  for (let m; (m = open.exec(src)); ) {
+    const block = readBlock(src, m.index + m[0].length);
+    if (!block) return null; // 閉じの無いブロックは提案として扱いません
+    if (block.proposals) return block.proposals;
+    open.lastIndex = block.end;
   }
   return null;
+}
+
+/**
+ * start から始まるブロックの中身を読み、{ proposals, end }（end は閉じの区切りの直後）を返します。閉じが無ければ null。
+ * 補足にコードブロックがあると、JSON の文字列の中にも区切り（バッククォート 3 つ）が現れます。最初の区切りで切ると
+ * JSON が途中で切れて読み取れないため、区切りの候補を順に試し、中身が JSON として読める最初の区切りを閉じとみなします。
+ * JSON は後ろに余分な文字があると読めないので、読める最初の範囲がブロックの中身全体になります。
+ * どの候補でも JSON として読めない場合は、従来どおり最初の区切りまでを箇条書きとして読みます。
+ */
+function readBlock(src, start) {
+  const ends = [];
+  for (let i = src.indexOf('```', start); i >= 0; i = src.indexOf('```', i + 3)) ends.push(i);
+  if (!ends.length) return null;
+  for (const end of ends) {
+    const body = src.slice(start, end).trim();
+    try {
+      JSON.parse(body);
+    } catch {
+      continue;
+    }
+    return { proposals: parseBlock(body), end: end + 3 };
+  }
+  return { proposals: parseBlock(src.slice(start, ends[0]).trim()), end: ends[0] + 3 };
 }
 
 /** ブロックの中身を JSON として、読めなければ箇条書きとして解釈します */

@@ -204,6 +204,13 @@ test('項目を取り出せない応答の前に提案があれば、その提�
   );
 });
 
+test('補足にコードブロックを含む提案も判断待ちとみなす', () => {
+  // 画面で仕分けボードが開く提案では、キューも一時停止します（判定の基準を画面とそろえるため）
+  const detail = '例:\n```bash\nnpm test\n```';
+  const text = '```proposals\n' + JSON.stringify({ items: [{ title: 'A 案', detail }] }) + '\n```';
+  assert.equal(hasOpenProposals([{ role: 'user', text: '調べて' }, { role: 'assistant', text }]), true);
+});
+
 test('1 つの応答で壊れたブロックの後に正しいブロックがあれば判断待ちとみなす', () => {
   const text = '```proposals\n{"items":[]}\n```\n訂正します。\n```proposals\n{"items":[{"title":"A 案"}]}\n```';
   assert.equal(hasOpenProposals([{ role: 'user', text: '調べて' }, { role: 'assistant', text }]), true);

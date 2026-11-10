@@ -38,6 +38,31 @@ test('ブロックが無い、または項目が無ければ null を返す', ()
   assert.equal(parseProposals(null), null);
 });
 
+test('補足にコードブロックがあっても、ブロック全体を提案として読み取る', () => {
+  // JSON の文字列の中にある区切り（バッククォート 3 つ）でブロックを切ると、JSON が途中で切れて提案を読み取れなくなるため
+  const items = [
+    { id: '1', title: '手順を載せる', detail: '例:\n```bash\nnpm test\n```\nを追記する' },
+    { id: '2', title: '図を入れる', detail: '' },
+  ];
+  const expected = {
+    title: '改善案',
+    items: [
+      { id: '1', title: '手順を載せる', detail: '例:\n```bash\nnpm test\n```\nを追記する' },
+      { id: '2', title: '図を入れる', detail: '' },
+    ],
+  };
+  // 1 行の JSON と、整形した複数行の JSON のどちらでも読み取れる
+  assert.deepEqual(parseProposals(block(JSON.stringify({ title: '改善案', items }))), expected);
+  assert.deepEqual(parseProposals(block(JSON.stringify({ title: '改善案', items }, null, 2))), expected);
+  // 後に別のブロックが続いても、最初のブロックの範囲で読み取る
+  const twice = `${block(JSON.stringify({ title: '改善案', items }))}\n${block('[{"title":"別の案"}]')}`;
+  assert.deepEqual(parseProposals(twice), expected);
+});
+
+test('閉じの区切りが JSON と同じ行にあるブロックも、従来どおり読み取る', () => {
+  assert.deepEqual(parseProposals('```proposals\n[{"title":"A"}]```'), { title: '提案', items: [{ id: '1', title: 'A', detail: '' }] });
+});
+
 test('閉じの無いブロックは提案として扱わない', () => {
   assert.equal(parseProposals('前置き\n```proposals\n{"items":[{"title":"A"}]}'), null);
 });

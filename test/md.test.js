@@ -77,6 +77,18 @@ test('proposals ブロックの補足は Markdown として描画し、改行と
   );
 });
 
+test('補足にコードブロックを含む proposals ブロックも崩れずに表示する', () => {
+  // JSON の文字列の中の区切りは行頭に来ないため、ブロックの終わりとはみなしません
+  const detail = '例:\n```bash\nnpm test\n```\nを追記する';
+  const json = { title: '改善案', items: [{ title: 'A', detail }, { title: 'B' }] };
+  for (const body of [JSON.stringify(json), JSON.stringify(json, null, 2)]) {
+    const html = renderMarkdown('前置き\n```proposals\n' + body + '\n```\n後書き');
+    assert.match(html, /^<p>前置き<\/p><div class="proposals-block"><div class="pb-head">改善案<\/div><ol>/);
+    assert.match(html, /<div class="pb-detail md"><p>例:<\/p><pre class="code" data-lang="bash">npm test<\/pre><p>を追記する<\/p><\/div>/);
+    assert.match(html, /<li><b>B<\/b><\/li><\/ol><\/div><p>後書き<\/p>$/);
+  }
+});
+
 test('proposals ブロックの補足は HTML として解釈しない', () => {
   const html = renderMarkdown('```proposals\n' + JSON.stringify({ items: [{ title: 'A', detail: '<img src=x onerror=alert(1)>\n- <b>太字</b>' }] }) + '\n```');
   assert.doesNotMatch(html, /<img|<b>太字/);
