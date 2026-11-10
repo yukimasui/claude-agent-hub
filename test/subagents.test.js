@@ -14,6 +14,12 @@ after(() => fs.rmSync(root, { recursive: true, force: true }));
 let seq = 0;
 const jsonl = (lines) => lines.map((l) => JSON.stringify(l)).join('\n') + '\n';
 const sideUser = (content, ts = '2026-01-01T00:00:00.000Z') => ({ type: 'user', isSidechain: true, timestamp: ts, message: { role: 'user', content } });
+/** 親の transcript に記録される完了通知の行です（実際の記録と同じく、行に timestamp があります） */
+const note = (id, status, ts = new Date().toISOString()) => ({
+  type: 'queue-operation',
+  timestamp: ts,
+  content: `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>${status}</status>\n</task-notification>`,
+});
 const sideAssistant = (content, ts = '2026-01-01T00:00:01.000Z') => ({ type: 'assistant', isSidechain: true, timestamp: ts, message: { role: 'assistant', content } });
 
 /** 親のセッションの記録を作り、ハブのエージェントに相当するオブジェクトを返します */
@@ -106,13 +112,12 @@ test('サブエージェントからの対話要求は、そのサブエージ�
 });
 
 test('親の transcript の完了通知から失敗を読み取り、追記分も反映する', () => {
-  const note = (id, status) => ({ type: 'queue-operation', content: `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>${status}</status>\n</task-notification>` });
   const p = session({ parentLines: [note('a1', 'failed'), { type: 'user', message: { role: 'user', content: 'ほかの行' } }] });
   addSub(p, 'a1', { description: 'x' });
   addSub(p, 'a2', { description: 'y' });
   assert.deepEqual(listSubagents(p).map((s) => s.state), ['failed', 'running']);
   fs.appendFileSync(p.transcriptPath, jsonl([note('a2', 'completed')]));
-  assert.equal(readNotifications(p.transcriptPath).get('a2'), 'completed');
+  assert.equal(readNotifications(p.transcriptPath).get('a2').status, 'completed');
   assert.deepEqual(listSubagents(p).map((s) => s.state), ['failed', 'done']);
 });
 
@@ -208,15 +213,42 @@ test('完了したあとに再開されて記録が続いているサブエー�
 });
 
 test('完了通知は 1 回の確認で読む量を制限し、残りは次の確認で読み進める', () => {
-  const note = (id, status) => ({ type: 'queue-operation', content: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n</task-notification>` });
   const filler = { type: 'user', message: { role: 'user', content: 'x'.repeat(300) } };
   const p = session({ parentLines: [note('a1', 'failed'), ...Array(20).fill(filler), note('a2', 'killed')] });
   const first = readNotifications(p.transcriptPath, { limit: 1000 });
-  assert.equal(first.get('a1'), 'failed');
+  assert.equal(first.get('a1').status, 'failed');
   assert.equal(first.has('a2'), false);
   assert.equal(notificationsCaughtUp(p.transcriptPath), false);
   let st;
   for (let i = 0; i < 20 && !notificationsCaughtUp(p.transcriptPath); i++) st = readNotifications(p.transcriptPath, { limit: 1000 });
   assert.equal(notificationsCaughtUp(p.transcriptPath), true);
-  assert.equal(st.get('a2'), 'killed');
+  assert.equal(st.get('a2').status, 'killed');
+});
+
+test('完了通知の後に再開されたサブエージェントは、その通知を使わず実行中とみなす', () => {
+  // Claude Code は再開するときに meta.json を書き直して finished を外します。最初の完了通知は親の transcript に残ります
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const p = session({ parentLines: [note('resumed', 'completed', tenMinAgo), note('finished', 'completed', tenMinAgo), note('failed', 'failed', tenMinAgo)] });
+  p.processStartedAt = Date.now() - 60 * 60 * 1000;
+  addSub(p, 'resumed', { description: '再開した' });
+  addSub(p, 'finished', { description: '完了したまま' });
+  addSub(p, 'failed', { description: '失敗したまま' });
+  // 再開していないものは、記録の更新が通知より前（完了した時点）で止まっています
+  const dir = subagentsDir(p.transcriptPath);
+  const before = new Date(Date.parse(tenMinAgo) - 1000);
+  for (const id of ['finished', 'failed']) for (const f of [`agent-${id}.jsonl`, `agent-${id}.meta.json`]) fs.utimesSync(path.join(dir, f), before, before);
+  assert.deepEqual(listSubagents(p).map((s) => [s.id, s.state]).sort(), [
+    ['failed', 'failed'],
+    ['finished', 'done'],
+    ['resumed', 'running'],
+  ]);
+});
+
+test('時刻のない行（API への送信内容の記録など）にある完了通知は使わない', () => {
+  // 送信内容の記録には過去の会話が含まれるため、古い通知が新しい通知を上書きしないようにします
+  const blob = { type: 'api-request-blob', message: { content: [{ type: 'text', text: '<task-notification>\n<task-id>a1</task-id>\n<status>failed</status>\n</task-notification>' }] } };
+  const p = session({ parentLines: [note('a1', 'completed'), blob] });
+  const st = readNotifications(p.transcriptPath);
+  assert.equal(st.get('a1').status, 'completed');
+  assert.equal(typeof st.get('a1').ts, 'number');
 });

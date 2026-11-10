@@ -45,7 +45,8 @@ claude (tmux pane) ──hook──▶ hooks/hub-hook.cjs ──append──▶ 
 - Claude Code は、親のセッションの transcript（`<セッション ID>.jsonl`）と同じ場所の `<セッション ID>/subagents/` に、サブエージェントごとの transcript（`agent-<ID>.jsonl`）と起動時の情報（`agent-<ID>.meta.json`。説明・種類・親のサブエージェント・バックグラウンドかどうか・終了したか）を保存します。
 - 状態は、meta.json の終了の記録、親の transcript にある完了通知（`<task-notification>` の status）、親エージェントの状態から判定し、作業内容はサブエージェントの transcript の最後のやり取りから求めます。
   - 親のプロセスが起動した時刻（`startup` / `resume` の SessionStart と、ハブからの再起動の時刻）より前に記録が止まっていて終了の記録もないものは、前のプロセスとともに止まったとみなして「中断」にします。`compact` / `clear` の SessionStart はプロセスが続くので起動時刻にしません。
-  - 完了の記録（meta.json の更新）の後も transcript が更新されているものは、再開されたとみなして状態を判定し直します。
+  - SendMessage などで再開されると、Claude Code は meta.json を書き直して終了の記録を外しますが、最初の完了通知は親の transcript に残ります。そのため、完了通知を記録した行の時刻を覚えておき、それより後に meta.json や transcript が更新されているものは、その通知を使わずに今の記録から判定します。meta.json に終了の記録があるまま transcript が更新され続けている場合も、再開されたとみなします。
+  - 時刻のない行（API への送信内容の記録など）にある完了通知は、過去の会話をそのまま含むため使いません。
   - 完了通知を探すための親の transcript は、前回の続きから 1 回の確認あたり 2MB までを読み、残りは次の確認で読みます。
 - サブエージェント内のツール呼び出しも hook のイベントとして届き、hook は入力の `agent_id` を記録します。サーバはイベントが届くたびと 3 秒ごとに一覧を組み立て直し、変化があれば画面に配信します。`agent_id` は、回答待ちの要求がどのサブエージェントのものかの判別にも使います。
 - サブエージェントの会話の API（`GET /api/agents/<エージェント ID>/subagents/<サブエージェント ID>/transcript`）は、そのエージェントの現在のセッションの `subagents/` にあり、meta.json の記録があるサブエージェントの transcript だけを返します。ID は英数字・`_`・`-` だけを受け付け、シンボリックリンクはたどりません。
