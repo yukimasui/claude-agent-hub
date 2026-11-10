@@ -1,0 +1,13 @@
+{
+  "name": "claude-agent-hub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "tmux 上で複数の Claude Code セッションを起動・監視・操作するローカルハブ",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
