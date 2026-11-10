@@ -31,7 +31,7 @@ import { INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason 
 import * as tmux from './lib/tmux.js';
 import { readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
-import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
+import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage, serveStatic } from './lib/http.js';
 
 const store = new Store();
 
@@ -345,19 +345,6 @@ async function readJson(req) {
   }
 }
 
-const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
-
-function serveStatic(res, pathname) {
-  const rel = pathname === '/' ? 'index.html' : pathname.slice(1);
-  const file = path.resolve(PUBLIC_DIR, rel);
-  if (!file.startsWith(PUBLIC_DIR + path.sep) || !fs.existsSync(file) || !fs.statSync(file).isFile()) {
-    res.writeHead(404).end('Not found');
-    return;
-  }
-  res.writeHead(200, { 'content-type': `${MIME[path.extname(file)] || 'application/octet-stream'}; charset=utf-8`, 'cache-control': 'no-cache' });
-  fs.createReadStream(file).pipe(res);
-}
-
 async function api(req, res, url) {
   const im = url.pathname.match(IMAGE_PATH_RE);
   if (im) {
@@ -476,7 +463,7 @@ const server = http.createServer(async (req, res) => {
     checkRequest(req);
     const url = new URL(req.url, 'http://localhost');
     if (url.pathname.startsWith('/api/')) await api(req, res, url);
-    else if (req.method === 'GET') serveStatic(res, url.pathname);
+    else if (req.method === 'GET') serveStatic(req, res, PUBLIC_DIR, url.pathname);
     else throw httpError(405, 'Method not allowed');
   } catch (e) {
     if (!res.headersSent) send(res, e.status || 500, { error: e.message, ...(e.code && typeof e.code === 'string' && e.status ? { code: e.code } : {}) });
