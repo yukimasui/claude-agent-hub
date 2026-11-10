@@ -1,7 +1,7 @@
 // lib/queue.js のテストです。送信ガード、キュー操作の受け付け、判断待ちの提案の判定を確かめます。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_QUEUE, applyQueueOp, hasOpenProposals, sendBlockReason } from '../lib/queue.js';
+import { MAX_QUEUE, PROPOSAL_PAUSE_NOTE, applyQueueOp, hasOpenProposals, sendBlockReason, shouldPauseForProposals } from '../lib/queue.js';
 
 /** 送信してよい状態のエージェントを基本に、指定したフィールドだけを変えたものを作ります */
 const agent = (fields = {}) => ({ alive: true, pending: [], state: 'idle', queue: [], queuePaused: false, queueNote: '', ...fields });
@@ -200,4 +200,52 @@ test('項目を取り出せない応答の前に提案があれば、その提�
 test('1 つの応答で壊れたブロックの後に正しいブロックがあれば判断待ちとみなす', () => {
   const text = '```proposals\n{"items":[]}\n```\n訂正します。\n```proposals\n{"items":[{"title":"A 案"}]}\n```';
   assert.equal(hasOpenProposals([{ role: 'user', text: '調べて' }, { role: 'assistant', text }]), true);
+});
+
+// ---------- 提案への判断をキューに入れる場合 ----------
+
+const openItems = [{ role: 'user', text: '調べて' }, { role: 'assistant', text: proposals }];
+
+test('提案への判断は、ほかの項目より先に入る', () => {
+  const r = applyQueueOp(agent({ queue: [item('x1'), item('x2')] }), { op: 'add', text: 'A 案を採用します', reply: true });
+  assert.deepEqual(r.fields.queue.map((x) => x.text), ['A 案を採用します', 'task x1', 'task x2']);
+  assert.equal(r.fields.queue[0].reply, true);
+  // 通常の追加には判断の印を付けません
+  const plain = applyQueueOp(agent(), { op: 'add', text: '次の作業' });
+  assert.equal(plain.fields.queue[0].reply, undefined);
+});
+
+test('提案のために一時停止していれば、判断を入れたときに一時停止を解除する', () => {
+  const a = agent({ queue: [item('x1')], queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE });
+  const r = applyQueueOp(a, { op: 'add', text: 'A 案を採用します', reply: true });
+  assert.equal(r.fields.queuePaused, false);
+  assert.equal(r.fields.queueNote, '');
+  assert.equal(r.sendNext, false);
+  // 解除した後の自動送信では、先頭の判断を提案があっても止めずに送ります
+  assert.equal(shouldPauseForProposals({ ...a, ...r.fields }, openItems), false);
+});
+
+test('提案以外の理由の一時停止は、判断を入れても解除しない', () => {
+  // 手動の一時停止や中断による一時停止は利用者の意図なので、1 回の「再開」で判断から送られる状態にとどめます
+  for (const queueNote of ['手動で一時停止中', '中断したため一時停止しました']) {
+    const r = applyQueueOp(agent({ queue: [item('x1')], queuePaused: true, queueNote }), { op: 'add', text: '判断', reply: true });
+    assert.equal('queuePaused' in r.fields, false, queueNote);
+    assert.equal(r.fields.queue[0].text, '判断', queueNote);
+  }
+  // 通常の追加では、提案による一時停止も解除しません（提案への返答にはならないため）
+  const plain = applyQueueOp(agent({ queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE }), { op: 'add', text: '次の作業' });
+  assert.equal('queuePaused' in plain.fields, false);
+});
+
+test('判断待ちの提案があっても、先頭が判断なら一時停止しない', () => {
+  assert.equal(shouldPauseForProposals(agent({ queue: [item('r1', '判断', { reply: true }), item('x1')] }), openItems), false);
+  // 先頭が判断以外なら、提案への返答より先に無関係な指示が届かないよう一時停止します
+  assert.equal(shouldPauseForProposals(agent({ queue: [item('x1'), item('r1', '判断', { reply: true })] }), openItems), true);
+  assert.equal(shouldPauseForProposals(agent({ queue: [item('x1')] }), openItems), true);
+});
+
+test('判断を送った後は、続く項目のために再び一時停止しない', () => {
+  // 判断の送信で利用者の発言が提案の後に続くため、提案は返答済みになります
+  const answered = [...openItems, { role: 'user', text: 'A 案を採用します' }, { role: 'assistant', text: '実施しました。' }];
+  assert.equal(shouldPauseForProposals(agent({ queue: [item('x1')] }), answered), false);
 });

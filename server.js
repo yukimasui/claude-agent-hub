@@ -27,7 +27,7 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { applyQueueOp, hasOpenProposals, sendBlockReason } from './lib/queue.js';
+import { PROPOSAL_PAUSE_NOTE, applyQueueOp, sendBlockReason, shouldPauseForProposals } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
 import { readTranscript } from './lib/transcript.js';
 
@@ -267,8 +267,8 @@ async function dispatchNext(id, { force = false } = {}) {
   const a = store.get(id);
   if (!readyForNext(a) || (a.queuePaused && !force)) return;
   // 画面（/api/agents/:id/transcript の既定）と同じ件数を読み、仕分けボードの自動表示と同じ範囲で判定します
-  if (!force && hasOpenProposals(readTranscript(a.transcriptPath))) {
-    store.patch(id, { queuePaused: true, queueNote: '判断待ちの提案があるため一時停止しました' });
+  if (!force && shouldPauseForProposals(a, readTranscript(a.transcriptPath))) {
+    store.patch(id, { queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE });
     return;
   }
   dispatching.add(id);

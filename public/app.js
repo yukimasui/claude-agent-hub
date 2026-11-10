@@ -256,8 +256,8 @@ function openTriageFor(it, auto) {
     onSend: async (text, mode) => {
       const a = agents.find((x) => x.id === agentId);
       try {
-        await sendOrQueue(a, text, mode);
-        toast(mode === 'queue' ? '判断をキューに追加しました' : '判断を送信しました');
+        await sendOrQueue(a, text, mode, false, true);
+        toast(mode === 'queue' ? '判断をキューの先頭に追加しました' : '判断を送信しました');
       } catch (e) {
         toast(e.message);
         throw e;
@@ -413,10 +413,13 @@ function setTab(t) {
   else loadTranscript();
 }
 
-/** 今すぐ送るかキューに積むにゃ。ダイアログ表示中はサーバが送信を拒否するにゃ */
-async function sendOrQueue(a, text, mode, clearFirst = false) {
+/**
+ * 今すぐ送るかキューに積むにゃ。ダイアログ表示中はサーバが送信を拒否するにゃ。
+ * reply は仕分けボードからの提案への判断であることを示します。サーバはキューの先頭に入れ、提案による一時停止を解除します。
+ */
+async function sendOrQueue(a, text, mode, clearFirst = false, reply = false) {
   if (!a) throw new Error('エージェントが選択されていません');
-  if (mode === 'queue') return api('POST', `/api/agents/${a.id}/queue`, { op: 'add', text, clearFirst });
+  if (mode === 'queue') return api('POST', `/api/agents/${a.id}/queue`, { op: 'add', text, clearFirst, reply });
   return api('POST', `/api/agents/${a.id}/send`, { text });
 }
 

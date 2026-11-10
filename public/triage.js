@@ -186,7 +186,7 @@ export function openBoard(root, opts) {
       <textarea class="tri-comment" rows="2" placeholder="全体へのコメント（任意）">${esc(state.comment)}</textarea>
       <footer class="tri-foot">
         <button type="button" class="primary" data-act="send">判断を送信</button>
-        <button type="button" data-act="queue" title="エージェントの作業が終わってから送信します">キューに追加</button>
+        <button type="button" data-act="queue" title="キューの先頭に入れ、エージェントの作業が終わってから送信します">キューに追加</button>
         <span class="hint">カードをドラッグするか、ボタン・キー（A 採用 / X 却下 / E 修正 / U 戻す）で仕分けできます</span>
       </footer>
     </div>`;
