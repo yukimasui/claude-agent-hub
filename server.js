@@ -29,7 +29,8 @@ import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
 import { PROPOSAL_PAUSE_NOTE, applyQueueOp, sendBlockReason, shouldPauseForProposals } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
-import { readTranscript } from './lib/transcript.js';
+import { readTranscript, readTranscriptImage } from './lib/transcript.js';
+import { checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
 
 const store = new Store();
 
@@ -71,10 +72,6 @@ function agentEnv(a) {
 function resolveDir(p) {
   if (!p) return null;
   return path.resolve(p.replace(/^~(?=$|\/)/, os.homedir()));
-}
-
-function httpError(status, message) {
-  return Object.assign(new Error(message), { status });
 }
 
 // ---------- エージェント操作 ----------
@@ -317,17 +314,6 @@ async function readJson(req) {
   }
 }
 
-// ローカル専用ツールなので、DNS rebinding や他サイトからの CSRF を弾くにゃ
-function checkRequest(req) {
-  const host = req.headers.host || '';
-  if (!/^(localhost|127\.0\.0\.1)(:\d+)?$/.test(host)) throw httpError(403, 'Forbidden host');
-  if (req.method !== 'GET') {
-    if (!(req.headers['content-type'] || '').startsWith('application/json')) throw httpError(415, 'application/json が必要です');
-    const origin = req.headers.origin;
-    if (origin && new URL(origin).host !== host) throw httpError(403, 'Forbidden origin');
-  }
-}
-
 const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.ico': 'image/x-icon' };
 
 function serveStatic(res, pathname) {
@@ -342,6 +328,19 @@ function serveStatic(res, pathname) {
 }
 
 async function api(req, res, url) {
+  // 画像はツール呼び出し ID などを含む参照で指定するため、ほかの操作とは別の形式のパスにしています
+  const im = url.pathname.match(/^\/api\/agents\/([\w-]+)\/images\/([\w.-]{1,200})$/);
+  if (im) {
+    if (req.method !== 'GET') throw httpError(405, 'Method not allowed');
+    checkImageRequest(req);
+    const a = store.get(im[1]);
+    if (!a) throw httpError(404, 'エージェントが見つかりません');
+    // そのエージェントの transcript にある画像だけを、参照から引いて返します
+    const img = readTranscriptImage(a.transcriptPath, im[2]);
+    if (!img) throw httpError(404, '画像が見つかりません');
+    return sendImage(res, img);
+  }
+
   const m = url.pathname.match(/^\/api\/agents(?:\/([\w-]+)(?:\/(\w+))?)?$/);
 
   if (url.pathname === '/api/stream') {

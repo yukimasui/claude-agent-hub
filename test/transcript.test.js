@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { readTranscript } from '../lib/transcript.js';
+import { detectImageType, readTranscript, readTranscriptImage } from '../lib/transcript.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-transcript-'));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -12,10 +12,15 @@ after(() => fs.rmSync(dir, { recursive: true, force: true }));
 let seq = 0;
 /** 行の配列を transcript ファイルに書いて読み込みます（キャッシュが効かないよう毎回別ファイルにします） */
 function read(lines, limit) {
-  const file = path.join(dir, `t${++seq}.jsonl`);
-  fs.writeFileSync(file, lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n');
-  return readTranscript(file, limit);
+  return readTranscript(write(lines), limit);
 }
+/** 行の配列を新しい transcript ファイルに書き、そのパスを返します */
+function write(lines) {
+  const file = path.join(dir, `t${++seq}.jsonl`);
+  fs.writeFileSync(file, toJsonl(lines));
+  return file;
+}
+const toJsonl = (lines) => lines.map((l) => (typeof l === 'string' ? l : JSON.stringify(l))).join('\n') + '\n';
 
 const user = (content, extra = {}) => ({ type: 'user', timestamp: 't', message: { role: 'user', content }, ...extra });
 const assistant = (content) => ({ type: 'assistant', timestamp: 't', message: { role: 'assistant', content } });
@@ -111,4 +116,128 @@ test('limit で末尾の件数だけを返し、ファイルが無ければ空�
   assert.deepEqual(items.map((i) => i.text), ['2', '3']);
   assert.deepEqual(readTranscript(path.join(dir, 'missing.jsonl')), []);
   assert.deepEqual(readTranscript(null), []);
+});
+
+// ---------- 画像 ----------
+
+// 1x1 の PNG と、各形式の先頭部分です（形式の判定は先頭のバイト列だけを見るため、本体は省略しています）
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+const GIF = Buffer.from('GIF89a\x01\x00\x01\x00', 'latin1');
+const WEBP = Buffer.from('RIFF\x1a\x00\x00\x00WEBPVP8 ', 'latin1');
+const SVG = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+
+const image = (data, mediaType = 'image/png') => ({ type: 'image', source: { type: 'base64', media_type: mediaType, data: data.toString('base64') } });
+const readFile = (dims = { originalWidth: 2, originalHeight: 1, displayWidth: 1, displayHeight: 1 }) => ({
+  toolUseResult: { type: 'image', file: { base64: PNG.toString('base64'), type: 'image/png', originalSize: PNG.length, dimensions: dims } },
+});
+// Read で画像を読んだときの transcript の形です（Claude Code 2.1.321 で確認した形式）
+const readImageLines = (id = 'toolu_01', data = PNG, mediaType = 'image/png') => [
+  assistant([toolUse(id, 'Read', { file_path: '/tmp/shot.png' })]),
+  user([toolResult(id, [image(data, mediaType)])], readFile()),
+];
+
+test('Read で読んだ画像は、base64 を含めずに参照だけをツール呼び出しの項目に付ける', () => {
+  const items = read(readImageLines());
+  assert.deepEqual(items, [
+    { role: 'tool', id: 'toolu_01', name: 'Read', summary: '/tmp/shot.png', ts: 't', images: [{ ref: 'toolu_01.0', mime: 'image/png', width: 1, height: 1 }] },
+  ]);
+  // 会話 API の応答になる項目に、画像の base64 が含まれないことを確かめます
+  assert.ok(!JSON.stringify(items).includes(PNG.toString('base64')));
+});
+
+test('利用者が貼り付けた画像は、同じ行の本文の項目に付け、本文がなければ画像だけの項目にする', () => {
+  // 貼り付けた画像は、本文（[Image #1] を含む）と同じ content 配列に入り、行の uuid で参照します（Claude Code 2.1.318 で確認した形式）
+  const items = read([
+    user([{ type: 'text', text: '[Image #1] これを見てください' }, image(PNG)], { uuid: 'u-1', imagePasteIds: [1] }),
+    user([image(JPEG, 'image/jpeg'), image(GIF, 'image/gif')], { uuid: 'u-2' }),
+  ]);
+  assert.deepEqual(items, [
+    { role: 'user', text: '[Image #1] これを見てください', ts: 't', images: [{ ref: 'u-1.0', mime: 'image/png' }] },
+    { role: 'user', text: '', ts: 't', images: [{ ref: 'u-2.0', mime: 'image/jpeg' }, { ref: 'u-2.1', mime: 'image/gif' }] },
+  ]);
+});
+
+test('対応しない形式の画像や参照を作れない画像は、会話の項目に載せない', () => {
+  const items = read([
+    user([{ type: 'text', text: 'SVG と URL 参照' }, image(SVG, 'image/svg+xml'), { type: 'image', source: { type: 'url', url: 'http://example.com/a.png' } }], { uuid: 'u-1' }),
+    user([{ type: 'text', text: 'uuid のない行' }, image(PNG)]),
+    user([{ type: 'text', text: 'パスに使えない uuid' }, image(PNG)], { uuid: '../x' }),
+    user([image(PNG)], { uuid: 'side', isSidechain: true }),
+  ]);
+  assert.deepEqual(items, [
+    { role: 'user', text: 'SVG と URL 参照', ts: 't' },
+    { role: 'user', text: 'uuid のない行', ts: 't' },
+    { role: 'user', text: 'パスに使えない uuid', ts: 't' },
+  ]);
+});
+
+test('readTranscriptImage は参照が指す画像を、中身から判定した形式で返す', () => {
+  const file = write([
+    ...readImageLines('toolu_01'),
+    ...readImageLines('toolu_02', WEBP, 'image/webp'),
+    // 宣言が JPEG でも中身が PNG なら、Content-Type には中身の形式を使います
+    user([image(PNG, 'image/jpeg')], { uuid: 'u-1' }),
+  ]);
+  readTranscript(file);
+  assert.deepEqual(readTranscriptImage(file, 'toolu_01.0'), { mime: 'image/png', data: PNG });
+  assert.deepEqual(readTranscriptImage(file, 'toolu_02.0'), { mime: 'image/webp', data: WEBP });
+  assert.deepEqual(readTranscriptImage(file, 'u-1.0'), { mime: 'image/png', data: PNG });
+});
+
+test('readTranscriptImage は対応しない形式や偽装した画像を返さない', () => {
+  const file = write([
+    // 宣言は PNG だが中身は SVG（スクリプトを含む）
+    ...readImageLines('toolu_svg', SVG, 'image/png'),
+    // 宣言が SVG のもの
+    user([image(SVG, 'image/svg+xml')], { uuid: 'u-svg' }),
+    // 中身が PNG でも宣言が対応外のもの
+    user([image(PNG, 'image/bmp')], { uuid: 'u-bmp' }),
+  ]);
+  assert.deepEqual(readTranscript(file)[0].images, [{ ref: 'toolu_svg.0', mime: 'image/png', width: 1, height: 1 }]);
+  assert.equal(readTranscriptImage(file, 'toolu_svg.0'), null);
+  assert.equal(readTranscriptImage(file, 'u-svg.0'), null);
+  assert.equal(readTranscriptImage(file, 'u-bmp.0'), null);
+});
+
+test('readTranscriptImage はその transcript にない参照やファイルのパスを受け付けない', () => {
+  const mine = write(readImageLines('toolu_mine'));
+  const other = write(readImageLines('toolu_other'));
+  readTranscript(mine);
+  readTranscript(other);
+  assert.ok(readTranscriptImage(mine, 'toolu_mine.0'));
+  // 別のエージェントの transcript にある参照は、自分の transcript からは引けません
+  assert.equal(readTranscriptImage(mine, 'toolu_other.0'), null);
+  for (const ref of ['toolu_mine.1', 'toolu_mine', '../' + path.basename(other), other, '', null]) assert.equal(readTranscriptImage(mine, ref), null);
+  assert.equal(readTranscriptImage(null, 'toolu_mine.0'), null);
+  assert.equal(readTranscriptImage(path.join(dir, 'missing.jsonl'), 'toolu_mine.0'), null);
+});
+
+test('readTranscriptImage は会話の読み込み前でも、追記された画像でも参照できる', () => {
+  const file = write(readImageLines('toolu_01'));
+  // 会話を読み込む前に画像だけを要求された場合も、transcript を読んで参照を作ります
+  assert.deepEqual(readTranscriptImage(file, 'toolu_01.0')?.mime, 'image/png');
+  // 追記された画像は、参照が見つからないときに読み直して見つけます
+  fs.appendFileSync(file, toJsonl([user([{ type: 'text', text: '日本語の本文' }, image(GIF, 'image/gif')], { uuid: 'u-new' })]));
+  assert.deepEqual(readTranscriptImage(file, 'u-new.0'), { mime: 'image/gif', data: GIF });
+  // 以前の参照は、記録した位置のまま読めます
+  assert.deepEqual(readTranscriptImage(file, 'toolu_01.0'), { mime: 'image/png', data: PNG });
+});
+
+test('readTranscriptImage は transcript が書き換わって記録した位置の内容が変わった場合、読み直して正しい画像を返す', () => {
+  const file = write([user('前置き'), user([image(PNG)], { uuid: 'u-1' })]);
+  readTranscript(file);
+  // 前置きの長さを変えて同じ参照の画像を後ろにずらし、別の画像を同じ位置に置きます
+  fs.writeFileSync(file, toJsonl([user([image(GIF, 'image/gif')], { uuid: 'u-2' }), user('前置き'), user([image(JPEG, 'image/jpeg')], { uuid: 'u-1' })]));
+  assert.deepEqual(readTranscriptImage(file, 'u-1.0'), { mime: 'image/jpeg', data: JPEG });
+});
+
+test('detectImageType は先頭のバイト列から対応する形式だけを判定する', () => {
+  assert.equal(detectImageType(PNG), 'image/png');
+  assert.equal(detectImageType(JPEG), 'image/jpeg');
+  assert.equal(detectImageType(GIF), 'image/gif');
+  assert.equal(detectImageType(WEBP), 'image/webp');
+  assert.equal(detectImageType(SVG), null);
+  assert.equal(detectImageType(Buffer.from('<html>')), null);
+  assert.equal(detectImageType(Buffer.alloc(0)), null);
 });

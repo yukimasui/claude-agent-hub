@@ -131,6 +131,14 @@
       </form>
     </dialog>
 
+    <dialog id="dlg-image" class="image-viewer" aria-label="画像の表示">
+      <form method="dialog" class="viewer-bar">
+        <a id="viewer-open" target="_blank" rel="noopener noreferrer">新しいタブで開く</a>
+        <button value="close">閉じる</button>
+      </form>
+      <img id="viewer-img" alt="" />
+    </dialog>
+
     <div id="toast" class="toast" hidden></div>
     <script type="module" src="/app.js"></script>
   </body>

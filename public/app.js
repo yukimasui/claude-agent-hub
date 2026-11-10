@@ -4,6 +4,7 @@ import { mountPending, planHistory, questionHistory, todosHistory } from './card
 import { catAnimationEnabled, catCanvas, mountCats, setCatAnimation, updateCat } from './cats.js';
 import { renderQueue } from './queue.js';
 import { findOpenProposals, isDone, openBoard, parseProposals } from './triage.js';
+import { thumbsHtml } from './images.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -349,6 +350,8 @@ function renderChat(items) {
   for (const [idx, it] of items.entries()) {
     if (it.role === 'tool') {
       tools.push(`<span class="tool${it.error ? ' error' : ''}" title="${esc(it.error || it.summary)}"><b>${esc(it.name)}</b> ${esc(it.summary)}</span>`);
+      // ツールが読んだ画像は、その呼び出しのすぐ後ろにサムネイルで表示します
+      if (it.images) tools.push(thumbsHtml(selectedId, it.images));
       continue;
     }
     if (it.role === 'tool_error') {
@@ -362,7 +365,7 @@ function renderChat(items) {
         triageable ? `<div class="msg-tools"><button type="button" class="link triage-btn" data-idx="${idx}" title="項目をカードにして採用・却下・修正を仕分けます">仕分ける</button></div>` : ''
       }</div>`;
     }
-    else if (it.role === 'user') html += `<div class="msg user">${esc(it.text)}</div>`;
+    else if (it.role === 'user') html += `<div class="msg user">${esc(it.text)}${thumbsHtml(selectedId, it.images)}</div>`;
     else if (it.role === 'question') html += questionHistory(it);
     else if (it.role === 'plan') html += planHistory(it);
     else if (it.role === 'todos') html += todosHistory(it);
@@ -486,6 +489,21 @@ $('#input').addEventListener('keydown', (e) => {
 $('#chat').addEventListener('click', (e) => {
   const b = e.target.closest('.triage-btn');
   if (b) openTriageFor(chatItems[Number(b.dataset.idx)], false);
+  const t = e.target.closest('.thumb');
+  if (t) openImage(t.dataset.src, t.querySelector('img')?.alt || '');
+});
+
+// サムネイルを押すと、画像を原寸で表示します（大きい画像はダイアログ内でスクロールします）
+function openImage(src, alt) {
+  const img = $('#viewer-img');
+  img.src = src;
+  img.alt = alt;
+  $('#viewer-open').href = src;
+  $('#dlg-image').showModal();
+}
+// 画像の外側（背景）を押しても閉じられるようにします
+$('#dlg-image').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) e.currentTarget.close();
 });
 
 $('#btn-focus').addEventListener('click', async () => {
@@ -558,7 +576,7 @@ catAnimButton.addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if ($('#dlg-new').open || !e.altKey) return;
+  if ($('#dlg-new').open || $('#dlg-image').open || !e.altKey) return;
   if (e.key === 'ArrowUp') moveSelection(-1);
   else if (e.key === 'ArrowDown') moveSelection(1);
   else if (/^[1-9]$/.test(e.key)) select(agents[Number(e.key) - 1]?.id);
