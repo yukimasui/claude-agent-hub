@@ -365,7 +365,11 @@ function renderChat(items) {
         triageable ? `<div class="msg-tools"><button type="button" class="link triage-btn" data-idx="${idx}" title="項目をカードにして採用・却下・修正を仕分けます">仕分ける</button></div>` : ''
       }</div>`;
     }
-    else if (it.role === 'user') html += `<div class="msg user">${esc(it.text)}${thumbsHtml(selectedId, it.images)}</div>`;
+    else if (it.role === 'user') {
+      // 処理中に送って途中で取り込まれた発言には、いつ指示したかを追えるように目印を付けます
+      const note = it.queued ? '<div class="msg-note" title="エージェントの処理中に送られ、作業の途中で取り込まれた発言です">処理中に送信</div>' : '';
+      html += `<div class="msg user">${note}${esc(it.text)}${thumbsHtml(selectedId, it.images)}</div>`;
+    }
     else if (it.role === 'question') html += questionHistory(it);
     else if (it.role === 'plan') html += planHistory(it);
     else if (it.role === 'todos') html += todosHistory(it);

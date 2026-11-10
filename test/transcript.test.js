@@ -118,6 +118,100 @@ test('limit で末尾の件数だけを返し、ファイルが無ければ空�
   assert.deepEqual(readTranscript(null), []);
 });
 
+// ---------- 処理中に送った発言 ----------
+
+// 処理中に送られ、ターンの途中で取り込まれた発言の記録です（Claude Code 2.1.322 で確認した形式）。
+// 行は取り込まれた時点（ツールの結果の後）に書かれますが、timestamp は送信した時刻です。
+const queuedCommand = (prompt, timestamp, extra = {}) => ({
+  type: 'attachment',
+  uuid: `att-${timestamp}`,
+  timestamp,
+  isSidechain: false,
+  attachment: { type: 'queued_command', prompt, commandMode: 'prompt', origin: { kind: 'human' }, humanTurn: true, timestamp, source_uuid: 'src', ...extra },
+});
+const queueOp = (operation, content, timestamp, extra = {}) => ({ type: 'queue-operation', operation, content, timestamp, ...extra });
+const at = (sec) => `2026-11-11T00:00:${String(sec).padStart(2, '0')}.000Z`;
+const withTs = (line, timestamp) => ({ ...line, timestamp });
+
+test('処理中に送って途中で取り込まれた発言を、利用者の発言として表示する', () => {
+  const items = read([
+    withTs(user('最初の依頼'), at(0)),
+    withTs(assistant([toolUse('b1', 'Bash', { command: 'sleep 20' })]), at(1)),
+    queueOp('enqueue', '<pasted_content id="1">\n方針を変えてください\n</pasted_content>', at(5)),
+    withTs(user([toolResult('b1', 'done')]), at(21)),
+    queueOp('remove', '<pasted_content id="1">\n方針を変えてください\n</pasted_content>', at(21), { reason: 'absorbed_mid_turn', commandUuid: 'src' }),
+    queuedCommand('<pasted_content id="1">\n方針を変えてください\n</pasted_content>', at(5)),
+    withTs(assistant([{ type: 'text', text: '了解しました' }]), at(22)),
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.role, i.text ?? i.summary, i.queued]),
+    [
+      ['user', '最初の依頼', undefined],
+      ['tool', 'sleep 20', undefined],
+      ['user', '方針を変えてください', true],
+      ['assistant', '了解しました', undefined],
+    ],
+  );
+  assert.equal(items[2].ts, at(5));
+});
+
+test('取り込まれた発言は、送信した時刻より後に書かれた項目の前に並べる', () => {
+  // 応答の生成中に送った場合、送信より後に書かれた応答やツール呼び出しの後で取り込まれるため、送信時刻の位置に戻します
+  const items = read([
+    withTs(user('依頼'), at(0)),
+    withTs(assistant([{ type: 'text', text: '調べます' }]), at(2)),
+    withTs(assistant([toolUse('b1', 'Bash', { command: 'ls' })]), at(4)),
+    withTs(user([toolResult('b1', 'ok')]), at(5)),
+    queuedCommand('やはり別の方法で', at(3)),
+    withTs(assistant([{ type: 'text', text: '別の方法にします' }]), at(6)),
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.role, i.text ?? i.summary]),
+    [
+      ['user', '依頼'],
+      ['assistant', '調べます'],
+      ['user', 'やはり別の方法で'],
+      ['tool', 'ls'],
+      ['assistant', '別の方法にします'],
+    ],
+  );
+});
+
+test('取り込まれずにターンの後で送られた発言は、通常の発言として 1 回だけ表示する', () => {
+  // この場合は queued_command の行がなく、dequeue の後に通常の user 行として記録されます
+  const items = read([
+    withTs(user('依頼'), at(0)),
+    queueOp('enqueue', '追加の指示', at(1)),
+    withTs(assistant([{ type: 'text', text: '完了しました' }]), at(2)),
+    queueOp('dequeue', undefined, at(3)),
+    withTs(user('追加の指示', { origin: { kind: 'human' } }), at(3)),
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.role, i.text, i.queued]),
+    [
+      ['user', '依頼', undefined],
+      ['assistant', '完了しました', undefined],
+      ['user', '追加の指示', undefined],
+    ],
+  );
+});
+
+test('利用者以外が起点の queued_command は利用者の発言として表示しない', () => {
+  const items = read([
+    // バックグラウンドのタスクの完了通知
+    queuedCommand('<task-notification>完了</task-notification>', at(1), { commandMode: 'task-notification', origin: { kind: 'task-notification', producer: 'session-task' }, humanTurn: undefined }),
+    // サブエージェントからの報告
+    queuedCommand('[Subagent hand-back] 報告', at(2), { origin: { kind: 'peer', from: 'a1' }, isMeta: true, humanTurn: undefined }),
+    // サブエージェントの中での指揮役からの指示
+    { ...queuedCommand('サブエージェントへの指示', at(3), { origin: { kind: 'coordinator' }, commandMode: undefined }), isSidechain: true },
+    // 利用者の発言でも、サブエージェントの記録にあるもの
+    { ...queuedCommand('サブエージェント側の記録', at(4)), isSidechain: true },
+    // 本文が空のもの
+    queuedCommand('  ', at(5)),
+  ]);
+  assert.deepEqual(items, []);
+});
+
 // ---------- 画像 ----------
 
 // 1x1 の PNG と、各形式の先頭部分です（形式の判定は先頭のバイト列だけを見るため、本体は省略しています）
