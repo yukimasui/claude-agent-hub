@@ -1,7 +1,7 @@
 # Agent Hub 開発ガイド
 
 Agent Hub 自身を開発するときの構成・ルール・検証方法をまとめた文書です。
-機能の説明・使い方・環境変数の一覧は [README.md](README.md) を参照してください（ここには書きません）。
+機能の概要と起動方法は [README.md](README.md) を、使い方は [docs/usage.md](docs/usage.md)、仕組みは [docs/architecture.md](docs/architecture.md)、環境変数の一覧は [docs/configuration.md](docs/configuration.md) を参照してください（ここには書きません）。
 
 ## 構成
 
@@ -22,10 +22,11 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `test/` | `node:test` による単体テスト（Claude を起動しない） |
 | `scripts/dev.mjs` | 開発用ハブのランチャー |
 | `scripts/e2e/` | 実際の Claude Code を起動する E2E シナリオと画面確認スクリプト |
+| `docs/` | 利用者向けの文書（使い方・仕組み・設定）。README には概要だけを置き、詳細はここに書く |
 
 ### 状態の流れ
 
-全体の図は README の「[仕組み](README.md#仕組み)」にあります。コード上の流れは次のとおりです。
+全体の図は「[全体の構成](docs/architecture.md#全体の構成)」に、hook イベントと状態の対応は「[状態の判定](docs/architecture.md#状態の判定)」にあります。コード上の流れは次のとおりです。
 
 1. `server.js` が `<AGENT_HUB_HOME>/hooks.json` を生成し、`claude --settings` で渡して tmux のウィンドウで起動する。環境変数 `AGENT_HUB_AGENT`（エージェント ID）と `AGENT_HUB_HOME` を付けるので、hook はどのハブのどのエージェントかを判別できる
 2. `hooks/hub-hook.cjs` がイベントごとに起動され、最小限に整形して `<AGENT_HUB_HOME>/events/<agentId>.jsonl` に追記する。hook はエージェントの邪魔をしないことを最優先にし、常に終了コード 0 で終わる
