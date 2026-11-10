@@ -85,6 +85,8 @@ test('状態の判定: 完了・失敗・中断・回答待ち', () => {
   assert.equal(subagentState({ meta: bg, notified: 'completed', parent }), 'done');
   assert.equal(subagentState({ meta: { ...bg, finished: true }, notified: 'failed', parent }), 'failed');
   assert.equal(subagentState({ meta: bg, notified: 'killed', parent }), 'ended');
+  // 利用者などが止めたものは status が stopped の通知になることがあり、実行中ではなく中断とみなします
+  assert.equal(subagentState({ meta: bg, notified: 'stopped', parent }), 'ended');
   assert.equal(subagentState({ meta: bg, parent, waiting: true }), 'waiting');
   // 終了の記録がないまま親のプロセスが終わったものは中断とみなします
   assert.equal(subagentState({ meta: bg, parent: { alive: false, state: 'ended' } }), 'ended');
