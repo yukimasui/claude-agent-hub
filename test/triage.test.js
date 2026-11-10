@@ -67,6 +67,51 @@ test('閉じの無いブロックは提案として扱わない', () => {
   assert.equal(parseProposals('前置き\n```proposals\n{"items":[{"title":"A"}]}'), null);
 });
 
+test('閉じの無いブロックは、補足に区切りを含んでいても提案として扱わない', () => {
+  // 補足のコードブロックの区切りを閉じと取り違え、ブロックの途中までを提案として読まないことを確かめます
+  const detail = '例:\n```bash\nnpm test\n```\nを追記する';
+  const compact = JSON.stringify({ items: [{ title: 'A', detail }] });
+  const pretty = JSON.stringify({ items: [{ title: 'A', detail }, { title: 'B' }] }, null, 2);
+  assert.equal(parseProposals(`前置き\n\`\`\`proposals\n${compact}`), null);
+  assert.equal(parseProposals(`前置き\n\`\`\`proposals\n${pretty}\n後書き`), null);
+});
+
+/** JSON.parse を呼んだ回数を数えながら fn を実行します */
+function countJsonParse(fn) {
+  const orig = JSON.parse;
+  let n = 0;
+  JSON.parse = (...args) => {
+    n++;
+    return orig(...args);
+  };
+  try {
+    return { result: fn(), count: n };
+  } finally {
+    JSON.parse = orig;
+  }
+}
+
+test('読み取れたブロックの JSON は 1 回だけ解析する', () => {
+  const items = [{ title: '手順を載せる', detail: '例:\n```bash\nnpm test\n```' }, { title: '図を入れる' }];
+  const { result, count } = countJsonParse(() => parseProposals(block(JSON.stringify({ title: '改善案', items }, null, 2))));
+  assert.equal(result.items.length, 2);
+  assert.equal(count, 1);
+});
+
+test('JSON として読めないブロックでは、後に区切りが多く続いても候補ごとに解析を試さない', () => {
+  // 壊れた JSON（末尾のカンマ）の後に多くのコードブロックが続く応答です。
+  // 候補ごとに切り出して解析すると「区切りの数 × 本文の長さ」の手間がかかるため、解析を試す回数が増えないことを確かめます
+  const rest = Array.from({ length: 200 }, (_, i) => `\`\`\`js\nconsole.log(${i});\n\`\`\``).join('\n');
+  const broken = block('[{"title":"A"},]');
+  const { result, count } = countJsonParse(() => parseProposals(`${broken}\n${rest}`));
+  assert.equal(result, null);
+  assert.ok(count <= 1, `JSON.parse の回数: ${count}`);
+  // 箇条書きのブロックでは、JSON の解析を試しません。従来どおり最初の区切りまでを箇条書きとして読みます
+  const list = countJsonParse(() => parseProposals(`${block('1. 一\n2. 二')}\n${rest}`));
+  assert.deepEqual(list.result.items.map((it) => it.title), ['一', '二']);
+  assert.equal(list.count, 0);
+});
+
 test('複数のブロックがあれば、項目を取り出せる最初のブロックを使う', () => {
   // 書き損じたブロックの後に書き直したブロックが続く応答でも、仕分けボードを出せるようにします
   const text = `${block('{"items":[]}')}\n${block('{"title":"訂正版","items":[{"title":"A"}]}')}\n${block('[{"title":"B"}]')}`;
@@ -82,6 +127,17 @@ test('findOpenProposals は最後の利用者の発言より後で、項目を�
   assert.equal(findOpenProposals([older, { role: 'user', text: '古い案で' }, empty]), null);
   assert.equal(findOpenProposals([{ role: 'user', text: '調べて' }, empty]), null);
   assert.equal(findOpenProposals([]), null);
+});
+
+test('findOpenProposals は完了通知や圧縮の項目を挟んでも、それより前の未返答の提案を判断待ちとして返す', () => {
+  // 完了通知（system）や圧縮の要約（compact）は利用者の返答ではないため、提案への返答があったとはみなしません
+  const open = { role: 'assistant', text: block('[{"title":"A 案"}]') };
+  const notice = { role: 'system', text: '完了通知: 調査が終わりました' };
+  const compact = { role: 'compact', text: '要約' };
+  assert.equal(findOpenProposals([{ role: 'user', text: '調べて' }, open, notice]), open);
+  assert.equal(findOpenProposals([{ role: 'user', text: '調べて' }, open, compact, notice, { role: 'assistant', text: '補足です' }]), open);
+  // 利用者の発言が続いた場合は返答済みです
+  assert.equal(findOpenProposals([open, notice, { role: 'user', text: 'A 案で' }]), null);
 });
 
 test('proposalKey は同じ応答に同じ値を、時刻か本文が異なる応答には異なる値を返す', () => {

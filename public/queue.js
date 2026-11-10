@@ -2,6 +2,31 @@
 // 並べ替え（ドラッグ＆ドロップ / ↑↓）、編集、/clear の切り替え、削除、一時停止・再開ができるにゃ
 import { esc } from './md.js';
 
+// 先頭の判断が古くなったためにキューを一時停止したときの理由（queueNote）です。
+// サーバ（lib/queue.js の proposalPauseNote）が一時停止の理由に使い、画面は会話を読み込めず古いかどうかを判定できない間も、
+// この理由で止まっていることから古い判断の扱いを選ぶボタンを出します（staleHead）。
+// 両者で文言が食い違うと判別を誤るため、画面とサーバの両方が読み込めるこのモジュールで定義しています（lib/queue.js から再公開しています）
+export const STALE_REPLY_NEW_PROPOSAL_NOTE = '新しい提案が出たため、先頭の判断を送らずに一時停止しました（古い判断を送るか削除するかを選んで再開してください）';
+export const STALE_REPLY_ANSWERED_NOTE = '判断の対象の提案にはすでに返答があるため、先頭の判断を送らずに一時停止しました（古い判断を送るか削除するかを選んで再開してください）';
+export const STALE_REPLY_NOTES = new Set([STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE]);
+
+/** エージェントが作業中で、キューの先頭がすぐには送られない状態かを返します */
+function isBusy(agent) {
+  return agent.state === 'running' || agent.state === 'compacting' || agent.state === 'waiting';
+}
+
+/**
+ * キューの表示を描き直すかどうかを判定するための値を返します（エージェントがなければ空文字）。
+ * 表示に関わる値（キューの中身・一時停止の状態と理由・作業中か・判断待ちの提案）が変わったときだけ値が変わります。
+ * openKey は「分からない」（undefined）と「判断待ちの提案がない」（null）で目印やボタンが変わるため、両者を別の値にします。
+ * JSON.stringify は配列の中の undefined を null に変えてしまうため、undefined は別の文字列に置き換えています。
+ * テストできるよう DOM には触れません。
+ */
+export function queueSignature(agent, openKey) {
+  if (!agent) return '';
+  return JSON.stringify([agent.id, agent.queue, agent.queuePaused, agent.queueNote, isBusy(agent), openKey === undefined ? '?' : openKey]);
+}
+
 /**
  * キューの項目が仕分けボードからの提案への判断（reply の印付き）であれば、項目に付ける目印を返します（判断でなければ null）。
  * openKey は判断待ちの提案の proposalKey で、判断待ちの提案がなければ null、会話をまだ読み込んでいないなどで分からないときは undefined を渡します。
@@ -33,12 +58,27 @@ export function replyMark(item, openKey) {
  * 一時停止中のキューの先頭が古い判断（replyMark が stale）なら、その項目を返します（そうでなければ null）。
  * このときは「再開」の代わりに「古い判断を送って再開」「古い判断を削除して再開」を出し、古い判断の扱いを利用者に選んでもらいます。
  * 単なる「再開」では、送る前の照合で再び一時停止するだけになり、操作の結果が分かりにくいためです。
- * 古いかどうかが分からないとき（openKey が undefined）は null を返し、通常の「再開」を出します。サーバが送る前に照合し、古ければ再び一時停止します。
+ * 古いかどうかが分からないとき（openKey が undefined）は、一時停止の理由で判断します。サーバが古い判断を理由に止めていて
+ * （STALE_REPLY_NOTES）、先頭が対象の記録のある判断であれば、その項目を返します。会話の取得に失敗し続けるなどで判定できない間も、
+ * 「再開」を押して照合で再び止まるだけにならないようにするためです。それ以外は null を返し、通常の「再開」を出します。
  * テストできるよう DOM には触れません。
  */
 export function staleHead(agent, openKey) {
   const head = agent.queue?.[0];
-  return agent.queuePaused && replyMark(head, openKey)?.stale ? head : null;
+  if (!agent.queuePaused || !head) return null;
+  if (openKey === undefined) return head.reply && head.proposal && STALE_REPLY_NOTES.has(agent.queueNote) ? head : null;
+  return replyMark(head, openKey)?.stale ? head : null;
+}
+
+/**
+ * 「先頭を今すぐ送信」のボタンの説明（title）を返します。
+ * 先頭が古い判断（staleHead が項目を返す）のときは、このボタンも照合せずにその判断を送るため、その旨を添えます。
+ * 並んで表示される「古い判断を送って再開」と同じく古い判断を送ることが、押す前に分かるようにするためです。
+ * テストできるよう DOM には触れません。
+ */
+export function sendNextTitle(agent, openKey) {
+  const base = '一時停止中でも先頭の 1 件だけを送信します';
+  return staleHead(agent, openKey) ? `${base}。先頭の古い判断も、提案と照合せずにそのまま送信します` : base;
 }
 
 /** 見出しの一時停止・再開のボタンです */
@@ -63,7 +103,7 @@ export function renderQueue(root, agent, op, openKey) {
     root.innerHTML = '';
     return;
   }
-  const busy = agent.state === 'running' || agent.state === 'compacting' || agent.state === 'waiting';
+  const busy = isBusy(agent);
   const status = agent.queuePaused
     ? `<span class="q-status paused">一時停止中${agent.queueNote ? `：${esc(agent.queueNote)}` : ''}</span>`
     : `<span class="q-status">${busy ? '現在の作業が終わると、先頭から自動で送信します' : '待機中のため、まもなく送信します'}</span>`;
@@ -71,8 +111,10 @@ export function renderQueue(root, agent, op, openKey) {
   root.innerHTML = `<header class="queue-head">
       <b>キュー</b><span class="muted">${q.length}件</span>
       ${status}
-      ${resumeButtons(agent, openKey)}
-      <button type="button" data-op="sendNext" ${q.length ? '' : 'disabled'} title="一時停止中でも先頭の 1 件だけを送信します">先頭を今すぐ送信</button>
+      <span class="q-actions">
+        ${resumeButtons(agent, openKey)}
+        <button type="button" data-op="sendNext" ${q.length ? '' : 'disabled'} title="${esc(sendNextTitle(agent, openKey))}">先頭を今すぐ送信</button>
+      </span>
     </header>
     <ol class="queue-list">
       ${q

@@ -177,6 +177,36 @@ test('取り込まれた発言は、送信した時刻より後に書かれた�
   );
 });
 
+test('取り込まれた発言は、同じ時刻の項目の後ろに並べる', () => {
+  // 送信と同じ時刻に書かれた項目は送信より前にあったものとして扱い、さかのぼるのは送信より後の項目だけにします
+  const items = read([
+    withTs(user('依頼'), at(0)),
+    withTs(assistant([{ type: 'text', text: '調べます' }]), at(3)),
+    withTs(assistant([toolUse('b1', 'Bash', { command: 'ls' })]), at(4)),
+    withTs(user([toolResult('b1', 'ok')]), at(5)),
+    queuedCommand('同じ時刻の指示', at(3)),
+  ]);
+  assert.deepEqual(
+    items.map((i) => i.text ?? i.summary),
+    ['依頼', '調べます', '同じ時刻の指示', 'ls'],
+  );
+});
+
+test('取り込まれた発言をさかのぼって並べるとき、時刻のない項目で止める', () => {
+  // 時刻を比べられない項目より前へは動かしません。順序が分からない項目を飛び越えて、誤った位置に入れないためです
+  const items = read([
+    withTs(user('依頼'), at(0)),
+    { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: '時刻のない応答' }] } },
+    withTs(assistant([toolUse('b1', 'Bash', { command: 'ls' })]), at(4)),
+    withTs(user([toolResult('b1', 'ok')]), at(5)),
+    queuedCommand('途中の指示', at(1)),
+  ]);
+  assert.deepEqual(
+    items.map((i) => i.text ?? i.summary),
+    ['依頼', '時刻のない応答', '途中の指示', 'ls'],
+  );
+});
+
 test('取り込まれずにターンの後で送られた発言は、通常の発言として 1 回だけ表示する', () => {
   // この場合は queued_command の行がなく、dequeue の後に通常の user 行として記録されます
   const items = read([
@@ -314,6 +344,69 @@ test('hook の実行結果に似ていない出力の行は、エスケープシ
     user(`<local-command-stdout>${ESC}[1mSet model to haiku${ESC}[22m\nNote [not a hook] は対象外\n${ESC}]8;;http://example.com${ESC}\\リンク${ESC}]8;;${ESC}\\</local-command-stdout>`),
   ]);
   assert.deepEqual(items, [{ role: 'system', text: 'Set model to haiku\nNote [not a hook] は対象外\nリンク', ts: 't' }]);
+});
+
+test('引用符のない形の hook の実行結果もパスを省き、hook イベント名で始まらない行は書き換えない', () => {
+  // 利用者が自分で設定した hook のコマンドは、引用符なしで表示されることがあります（パスは架空のものです）
+  const items = read([
+    user(
+      '<local-command-stdout>' +
+        [
+          'PreCompact [/opt/example/hooks/notify.sh] completed successfully',
+          'SessionStart [/opt/example/bin/node /opt/example/hooks/start.mjs] failed: exit code 2',
+          "PostCompact ['/opt/example/bin/node' /opt/example/hooks/mixed.cjs] completed successfully: {}",
+          "Result ['a' 'b'] は hook の行ではない",
+          'Note [not a hook] は対象外',
+        ].join('\n') +
+        '</local-command-stdout>',
+    ),
+  ]);
+  assert.deepEqual(items[0].text.split('\n'), [
+    'PreCompact の hook（notify.sh）: completed successfully',
+    'SessionStart の hook（start.mjs）: failed: exit code 2',
+    'PostCompact の hook（mixed.cjs）: completed successfully',
+    "Result ['a' 'b'] は hook の行ではない",
+    'Note [not a hook] は対象外',
+  ]);
+});
+
+test('hook の行に似た長い出力でも、照合に時間がかからない', () => {
+  // 引用符のない引数の区切り方が何通りもあると、閉じかっこのない行で照合をやり直し続けて止まるおそれがあるためです
+  const line = `PreCompact [${'a'.repeat(5000)}`;
+  const start = Date.now();
+  const items = read([user(`<local-command-stdout>${line}</local-command-stdout>`)]);
+  assert.equal(items[0].text, line);
+  assert.ok(Date.now() - start < 1000);
+});
+
+test('ESC に続く 2 文字以上のシーケンスも、後ろの文字を残さずに取り除く', () => {
+  // ESC ( B（文字集合の指定）、ESC 7 / ESC 8（カーソル位置の保存・復元）、ESC =、ESC c（端末の初期化）です
+  const items = read([user(`<local-command-stdout>${ESC}(B一${ESC}7二${ESC}8三${ESC}=四${ESC}c五${ESC}[1m六${ESC}[0m${ESC}</local-command-stdout>`)]);
+  assert.equal(items[0].text, '一二三四五六');
+});
+
+test('続けて実行した /compact では、並べ直した要約を 2 回目の /compact の後ろへ動かさない', () => {
+  // 圧縮の直後にもう一度 /compact を実行して失敗した場合です。2 回目の /compact は新しい要約を伴いません
+  const items = read([
+    user('依頼'),
+    ...compactLines(),
+    user('<command-name>/compact</command-name>'),
+    user('<local-command-stderr>Error: Not enough messages to compact.</local-command-stderr>'),
+  ]);
+  assert.deepEqual(
+    items.map((i) => (i.role === 'compact' ? 'compact' : i.text.split('\n')[0])),
+    ['依頼', '/compact', 'Compacted (ctrl+o to see full summary)', 'compact', '/compact', 'Error: Not enough messages to compact.'],
+  );
+});
+
+test('要約の時刻が /compact の行より前であれば、別の圧縮の要約とみなして並べ替えない', () => {
+  // /compact で作られる要約の行は、コマンドの行より先に書かれますが、時刻はコマンドの行より後になります
+  const lines = (summaryTs) => [
+    withTs(user('要約', { isCompactSummary: true }), summaryTs),
+    withTs(user('<command-name>/compact</command-name>'), at(10)),
+  ];
+  assert.deepEqual(read(lines(at(12))).map((i) => i.role), ['system', 'compact']);
+  assert.deepEqual(read(lines(at(5))).map((i) => i.role), ['compact', 'system']);
 });
 
 test('自動の圧縮（/compact の行がない場合）や、/compact の行が要約より後に離れている場合は並べ替えない', () => {

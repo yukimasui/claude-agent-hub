@@ -35,38 +35,51 @@ export function parseProposals(text) {
  * JSON が途中で切れて読み取れないため、区切りの候補を順に試し、中身が JSON として読める最初の区切りを閉じとみなします。
  * JSON は後ろに余分な文字があると読めないので、読める最初の範囲がブロックの中身全体になります。
  * どの候補でも JSON として読めない場合は、従来どおり最初の区切りまでを箇条書きとして読みます。
+ *
+ * 壊れた JSON や箇条書きのブロックでは、すべての候補を試すことになります。候補ごとに中身を切り出して解析すると
+ * 「区切りの数 × 本文の長さ」の手間がかかり、会話の再描画のたびに全応答で呼ばれるため長い応答で遅くなります。
+ * そこで、中身の先頭が { か [ で、候補の直前（空白を除く）が } か ] のときだけ切り出して解析します。
+ * JSON の文字列の中にある区切りの直前はふつうこれらの文字にならないため、解析を試す回数はほぼ 1 回で済みます。
  */
 function readBlock(src, start) {
-  const ends = [];
-  for (let i = src.indexOf('```', start); i >= 0; i = src.indexOf('```', i + 3)) ends.push(i);
-  if (!ends.length) return null;
-  for (const end of ends) {
-    const body = src.slice(start, end).trim();
-    try {
-      JSON.parse(body);
-    } catch {
-      continue;
+  const first = src.indexOf('```', start);
+  if (first < 0) return null;
+  // 中身の先頭の文字は候補によらず同じなので、一度だけ調べます
+  let head = start;
+  while (head < src.length && /\s/.test(src[head])) head++;
+  if (src[head] === '{' || src[head] === '[') {
+    for (let i = first; i >= 0; i = src.indexOf('```', i + 3)) {
+      let tail = i - 1;
+      while (tail > head && /\s/.test(src[tail])) tail--;
+      if (src[tail] !== '}' && src[tail] !== ']') continue;
+      const body = src.slice(head, tail + 1);
+      let json;
+      try {
+        json = JSON.parse(body);
+      } catch {
+        continue;
+      }
+      return { proposals: parseBlock(body, json), end: i + 3 };
     }
-    return { proposals: parseBlock(body), end: end + 3 };
   }
-  return { proposals: parseBlock(src.slice(start, ends[0]).trim()), end: ends[0] + 3 };
+  return { proposals: parseBlock(src.slice(start, first).trim()), end: first + 3 };
 }
 
-/** ブロックの中身を JSON として、読めなければ箇条書きとして解釈します */
-function parseBlock(body) {
-  try {
-    const j = JSON.parse(body);
-    const raw = Array.isArray(j) ? j : j.items;
-    const items = (raw || [])
+/**
+ * ブロックの中身を解釈します。readBlock が JSON として読めた場合はその値（json）を受け取り、もう一度解析する手間を省きます。
+ * json が無い場合、または JSON から項目を取り出せない場合は、箇条書きとして読みます。
+ */
+function parseBlock(body, json) {
+  if (json && typeof json === 'object') {
+    const raw = Array.isArray(json) ? json : json.items;
+    const items = (Array.isArray(raw) ? raw : [])
       .map((it, i) => ({
-        id: String(it.id ?? i + 1),
-        title: String(it.title ?? it.summary ?? it.text ?? '').trim(),
-        detail: String(it.detail ?? it.description ?? '').trim(),
+        id: String(it?.id ?? i + 1),
+        title: String(it?.title ?? it?.summary ?? it?.text ?? '').trim(),
+        detail: String(it?.detail ?? it?.description ?? '').trim(),
       }))
       .filter((it) => it.title);
-    if (items.length) return { title: String(j.title || '提案'), items };
-  } catch {
-    // JSON でなければ箇条書きとして読むにゃ
+    if (items.length) return { title: String(json.title || '提案'), items };
   }
   const items = extractListItems(body);
   return items.length ? { title: '提案', items } : null;
@@ -288,6 +301,11 @@ export function openBoard(root, opts) {
   let dragged = false; // ドラッグ直後のクリックで拡大表示を開かないための目印
   let pressedBackdrop = false; // 直前に押し始めた位置がダイアログの背景だったか
 
+  // カードの補足のうち、高さの上限で続きが隠れているものに clipped を付け、下端のぼかしを出します（style.css の .tri-detail）。
+  // 列の幅が変わると折り返しが変わって隠れるかどうかも変わるため、描画後に加えて大きさが変わるたびに測り直します
+  const markClipped = (el) => el.classList.toggle('clipped', el.scrollHeight > el.clientHeight + 1);
+  const clipObserver = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => entries.forEach((e) => markClipped(e.target))) : null;
+
   const render = (focusId) => {
     const judged = state.items.filter((it) => it.decision !== 'none').length;
     board.innerHTML = `
@@ -314,6 +332,11 @@ export function openBoard(root, opts) {
         <span class="hint">カードをドラッグするか、ボタン・キー（A 採用 / X 却下 / E 修正 / U 戻す）で仕分けできます。カードのクリック（Enter）で拡大表示します</span>
       </footer>`;
     root.hidden = false;
+    clipObserver?.disconnect();
+    for (const d of board.querySelectorAll('.tri-detail')) {
+      markClipped(d);
+      clipObserver?.observe(d);
+    }
     if (focusId) root.querySelector(`.tri-card[data-id="${CSS.escape(focusId)}"]`)?.focus({ preventScroll: true });
   };
 

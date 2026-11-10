@@ -20,6 +20,12 @@ const note = (id, status, ts = new Date().toISOString()) => ({
   timestamp: ts,
   content: `<task-notification>\n<task-id>${id}</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n<status>${status}</status>\n</task-notification>`,
 });
+/** ターンの途中で取り込まれた完了通知の行（queued_command の attachment）です */
+const queuedNote = (id, status, ts = new Date().toISOString()) => ({
+  type: 'attachment',
+  timestamp: ts,
+  attachment: { type: 'queued_command', origin: { kind: 'task-notification' }, prompt: note(id, status, ts).content },
+});
 const sideAssistant = (content, ts = '2026-01-01T00:00:01.000Z') => ({ type: 'assistant', isSidechain: true, timestamp: ts, message: { role: 'assistant', content } });
 
 /** 親のセッションの記録を作り、ハブのエージェントに相当するオブジェクトを返します */
@@ -253,4 +259,64 @@ test('時刻のない行（API への送信内容の記録など）にある完�
   const st = readNotifications(p.transcriptPath);
   assert.equal(st.get('a1').status, 'completed');
   assert.equal(typeof st.get('a1').ts, 'number');
+});
+
+test('完了通知は通知が届いたときの行だけから読み、ツールの結果などに引用された通知は使わない', () => {
+  // ツールの結果に古い通知の文字列が引用されると、その行の新しい時刻で通知を記録し直してしまうためです
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const quoted = {
+    type: 'user',
+    timestamp: new Date().toISOString(),
+    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_9', content: note('a1', 'completed').content }] },
+  };
+  const p = session({ parentLines: [note('a1', 'completed', tenMinAgo), quoted, queuedNote('a2', 'failed', tenMinAgo)] });
+  const st = readNotifications(p.transcriptPath);
+  assert.equal(st.get('a1').ts, Date.parse(tenMinAgo));
+  // ターンの途中で取り込まれた通知（attachment）は読みます
+  assert.equal(st.get('a2').status, 'failed');
+});
+
+test('再開した後に 2 回目の完了通知が届いたサブエージェントは、再び完了とみなす', () => {
+  const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+  const p = session({ parentLines: [note('r1', 'completed', tenMinAgo)] });
+  p.processStartedAt = Date.now() - 60 * 60 * 1000;
+  // 再開すると meta.json の finished が外れ、記録が最初の通知より後に更新されます
+  addSub(p, 'r1', { description: '再開した' });
+  assert.equal(listSubagents(p)[0].state, 'running');
+  fs.appendFileSync(p.transcriptPath, jsonl([note('r1', 'completed', new Date(Date.now() + 1000).toISOString())]));
+  assert.equal(listSubagents(p)[0].state, 'done');
+});
+
+test('完了通知より後の記録の更新は、5 秒までは完了の記録とみなし、それを超えると再開とみなす', () => {
+  // 完了時の記録の更新は通知の時刻の前後にずれることがあるため、5 秒の幅を設けています（RESUME_GAP_MS）
+  const t = Math.floor((Date.now() - 10 * 60 * 1000) / 1000) * 1000;
+  const p = session({ parentLines: [note('edge', 'completed', new Date(t).toISOString()), note('over', 'completed', new Date(t).toISOString())] });
+  p.processStartedAt = Date.now() - 60 * 60 * 1000;
+  addSub(p, 'edge', { description: 'ちょうど 5 秒後' });
+  addSub(p, 'over', { description: '5 秒を超えた' });
+  const dir = subagentsDir(p.transcriptPath);
+  const touch = (id, ms) => {
+    for (const f of [`agent-${id}.jsonl`, `agent-${id}.meta.json`]) fs.utimesSync(path.join(dir, f), new Date(ms), new Date(ms));
+  };
+  touch('edge', t + 5000);
+  touch('over', t + 5001);
+  assert.deepEqual(listSubagents(p).map((s) => [s.id, s.state]).sort(), [
+    ['edge', 'done'],
+    ['over', 'running'],
+  ]);
+});
+
+test('完了通知を読む対象がない場合は、読み終えたものとして扱う', () => {
+  // 終了したエージェントの定期的な確認を省けるよう、通知を読まないままの場合も読み終えたとみなします
+  assert.equal(notificationsCaughtUp(null), true);
+  assert.equal(notificationsCaughtUp(path.join(root, 'missing.jsonl')), true);
+  // transcript はあるが subagents/ がない場合です
+  const file = path.join(root, `nodir${++seq}.jsonl`);
+  fs.writeFileSync(file, jsonl([note('a1', 'completed')]));
+  assert.equal(notificationsCaughtUp(file), true);
+  // subagents/ がある場合は、通知を読むまでは読み終えていないとみなします
+  const p = session({ parentLines: [note('a1', 'completed')] });
+  assert.equal(notificationsCaughtUp(p.transcriptPath), false);
+  readNotifications(p.transcriptPath);
+  assert.equal(notificationsCaughtUp(p.transcriptPath), true);
 });

@@ -3,7 +3,7 @@
 // および判断を入れた後に対象の提案が古くなった場合は判断を送らずに一時停止することを確かめます。
 import { brief, check, createAgent, log, queue, send, sleep, soft, transcriptOf, waitFor } from '../lib.mjs';
 import { findOpenProposals, proposalKey } from '../../../public/triage.js';
-import { STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE } from '../../../lib/queue.js';
+import { PROPOSAL_PAUSE_NOTE, STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE } from '../../../lib/queue.js';
 
 export const description = '提案ブロックの出力と、判断待ちの提案があるときのキューの一時停止・判断のキュー追加・古くなった判断の一時停止';
 
@@ -31,7 +31,8 @@ export default async function run() {
     return;
   }
   check(s.queuePaused && s.queue.length === 1, '判断待ちの提案があるとキューを一時停止する', brief(s));
-  check(/提案/.test(s.queueNote), '一時停止の理由が表示される', s.queueNote);
+  // 文言を変えたときにも判定の食い違いに気づけるよう、正規表現ではなくサーバの定数と比べます
+  check(s.queueNote === PROPOSAL_PAUSE_NOTE, '一時停止の理由が表示される', s.queueNote);
 
   // 仕分けボードの「キューに追加」と同じく reply と対象の提案の識別子を付けて追加し、手動の操作なしに判断から送られることを確かめます
   const first = findOpenProposals(items);

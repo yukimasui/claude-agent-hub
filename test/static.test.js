@@ -17,6 +17,10 @@ fs.writeFileSync(path.join(publicDir, 'index.html'), '<!doctype html><p>index</p
 fs.writeFileSync(path.join(publicDir, 'app.js'), 'console.log(1);\n');
 // publicDir の外にあるファイルです。パスの細工で読めてはいけません
 fs.writeFileSync(path.join(root, 'secret.txt'), 'secret');
+// 名前が publicDir で始まる隣のディレクトリ（例: public と publicx）にもファイルを置きます。
+// ファイルがないと stat の失敗で 404 になり、前方一致の確認（path.sep を付けて比べること）まで届かないためです
+fs.mkdirSync(path.join(root, path.basename(publicDir) + 'x'));
+fs.writeFileSync(path.join(root, path.basename(publicDir) + 'x', 'secret.txt'), 'secret');
 
 let server;
 let port;

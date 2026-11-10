@@ -344,14 +344,17 @@ canvas.cat { image-rendering: pixelated; image-rendering: crisp-edges; display: 
 /* 状態の表示が残りの幅を埋めてボタンを右端に寄せます。一時停止の理由は長いことがあるため、その幅の中で折り返し、ボタンが次の行へ押し出されないようにします */
 .q-status { font-size: 12px; color: var(--muted); flex: 1 1 0; min-width: 200px; }
 .q-status.paused { color: var(--running); }
+/* ボタンは 1 つのまとまりにして右端に寄せます。幅が狭くて収まらない場合も、一部のボタンだけが次の行の左端に回らず、まとまって右寄せで折り返すようにします */
+.q-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-left: auto; }
 .queue-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .queue-item { display: grid; grid-template-columns: auto auto 1fr auto auto auto auto auto; gap: 6px; align-items: center; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); font-size: 13px; }
 .queue-item.dragging { opacity: 0.4; }
 .queue-item .grip { cursor: grab; color: var(--muted); user-select: none; letter-spacing: -2px; }
 .qi-num { font-family: var(--mono); font-size: 11px; color: var(--muted); }
-/* 提案への判断の項目は、先頭から外すと一時停止の原因になるため、左端の線と目印で通常の項目と見分けられるようにします */
-.queue-item.reply { border-left: 3px solid var(--accent); }
-.queue-item.stale { border-left-color: var(--running); }
+/* 提案への判断の項目は、先頭から外すと一時停止の原因になるため、左端の線と目印で通常の項目と見分けられるようにします。
+   枠線を太くすると本文の開始位置が通常の項目とずれるため、枠線は 1px のまま、内側の影で残りの 2px を描いて 3px の線に見せます */
+.queue-item.reply { border-left-color: var(--accent); box-shadow: inset 2px 0 0 var(--accent); }
+.queue-item.stale { border-left-color: var(--running); box-shadow: inset 2px 0 0 var(--running); }
 .qi-main { min-width: 0; }
 .qi-mark { display: inline-block; margin-bottom: 2px; padding: 0 6px; border-radius: 4px; font-size: 11px; cursor: help; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
 .queue-item.stale .qi-mark { color: var(--running); border-color: color-mix(in srgb, var(--running) 50%, transparent); background: color-mix(in srgb, var(--running) 12%, transparent); }
@@ -384,7 +387,13 @@ button.icon { padding: 0 6px; font-size: 12px; line-height: 1.6; }
 .tri-title { display: flex; gap: 6px; font-weight: 600; }
 .tri-text { flex: 1; min-width: 0; }
 .tri-num { font-family: var(--mono); font-size: 11px; color: var(--muted); padding-top: 2px; }
-.tri-detail { font-size: 12px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+/* 補足は 4 行分の高さまでに抑えます。Markdown の段落や箇条書きは複数のブロックになり -webkit-line-clamp が効かないため、高さで切ります。
+   続きが隠れている補足（描画後に高さを測って clipped を付けたもの。public/triage.js）だけ、下端を背景色へぼかして続きがあることを示します。
+   CSS だけでは、ちょうど 4 行の補足と、続きが隠れた補足を見分けられないためです */
+.tri-detail { font-size: 12px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; position: relative; max-height: 6em; overflow: hidden; }
+.tri-detail.clipped::after { content: ''; position: absolute; left: 0; right: 0; bottom: 0; height: 1.5em; background: linear-gradient(to bottom, transparent, var(--bg)); pointer-events: none; }
+.tri-card:hover .tri-detail, .tri-card:focus-within .tri-detail { max-height: none; }
+.tri-card:hover .tri-detail::after, .tri-card:focus-within .tri-detail::after { display: none; }
 /* カードの補足は Markdown として描画するので、段落や箇条書きの余白を詰めて一覧しやすくします */
 .tri-detail.md p, .tri-detail.md ul, .tri-detail.md ol { margin: 0; }
 .tri-detail.md ul, .tri-detail.md ol { padding-left: 1.2em; }
@@ -414,13 +423,6 @@ button.icon { padding: 0 6px; font-size: 12px; line-height: 1.6; }
   .tri-cols { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
 }
 .triage-panel { max-height: 52vh; }
-/* 補足は 4 行分の高さまでに抑えます。Markdown の段落や箇条書きは複数のブロックになり -webkit-line-clamp が効かないため、
-   高さで切り、下端を背景色へぼかして続きがあることを示します。ぼかしは 4 行目の位置に置くので、
-   4 行に満たない補足では要素の外に出て切り取られ、表示されません */
-.tri-detail { position: relative; max-height: 6em; overflow: hidden; }
-.tri-detail::after { content: ''; position: absolute; left: 0; right: 0; top: 4.5em; height: 1.5em; background: linear-gradient(to bottom, transparent, var(--bg)); pointer-events: none; }
-.tri-card:hover .tri-detail, .tri-card:focus-within .tri-detail { max-height: none; }
-.tri-card:hover .tri-detail::after, .tri-card:focus-within .tri-detail::after { display: none; }
 
 /* カードの拡大ボタン。カード全体のクリックでも開けますが、開けることが分かるように目印として置きます */
 .tri-expand { background: none; border: none; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1.2; align-self: start; opacity: 0.55; }

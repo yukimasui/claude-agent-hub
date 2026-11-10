@@ -2,7 +2,7 @@
 import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
 import { catAnimationEnabled, catCanvas, coatOf, mountCats, setCatAnimation, updateCat } from './cats.js';
-import { renderQueue } from './queue.js';
+import { queueSignature, renderQueue } from './queue.js';
 import { findOpenProposals, isDone, openBoard, parseProposals, proposalKey } from './triage.js';
 import { thumbsHtml } from './images.js';
 import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
@@ -282,10 +282,9 @@ let queueSig = '';
 let openProposal = { agentId: null, key: null };
 function syncQueue(a) {
   const root = $('#queue');
-  const busy = a && ['running', 'waiting', 'compacting'].includes(a.state);
   const openKey = a && openProposal.agentId === a.id ? openProposal.key : undefined;
-  // JSON.stringify は undefined を null に変えるため、「分からない」（undefined）と「判断待ちの提案がない」（null）を別の値にして、両者の変化で描き直します
-  const sig = a ? JSON.stringify([a.id, a.queue, a.queuePaused, a.queueNote, busy, openKey === undefined ? '?' : openKey]) : '';
+  // 「分からない」（undefined）と「判断待ちの提案がない」（null）の変化でも描き直すよう、判定の値は queueSignature で組み立てます
+  const sig = queueSignature(a, openKey);
   if (sig === queueSig) return;
   // 編集中は描き直さないにゃ（次の更新で反映するにゃ）
   if (root.querySelector('textarea:focus') || root.querySelector('.queue-item.dragging')) return;
@@ -466,7 +465,10 @@ function renderChat(items) {
     }
     else if (it.role === 'user') {
       // 処理中に送って途中で取り込まれた発言には、いつ指示したかを追えるように目印を付けます
-      const note = it.queued ? '<div class="msg-note" title="エージェントの処理中に送られ、作業の途中で取り込まれた発言です">処理中に送信</div>' : '';
+      // 表示する位置は取り込まれた位置ではなく送信した時刻の位置なので、直後の応答がこの発言への返答だと誤読されないよう説明に添えます
+      const note = it.queued
+        ? '<div class="msg-note" title="エージェントの処理中に送られ、作業の途中で取り込まれた発言です。取り込まれた位置ではなく、送信した時刻の位置に表示しています">処理中に送信</div>'
+        : '';
       html += `<div class="msg user">${note}${esc(it.text)}${thumbsHtml(selectedId, it.images)}</div>`;
     }
     else if (it.role === 'question') html += questionHistory(it);
@@ -527,6 +529,9 @@ function selectSub(id, sub) {
   if (!id || !sub) return;
   selectedId = id;
   setSelectedSub(sub);
+  // サブエージェントの表示中は親の会話を読み直さないため、親に戻った直後に古い判定で目印を出さないよう「分からない」に戻します。
+  // 親に戻ると会話を読み直し、判断待ちの提案を改めて調べます（loadTranscript）
+  openProposal = { agentId: null, key: null };
   save('selectedId', id);
   renderList();
   renderDetail();

@@ -8,7 +8,7 @@ import {
   applyQueueOp, hasOpenProposals, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
 import { proposalKey, findOpenProposals } from '../public/triage.js';
-import { replyMark, staleHead } from '../public/queue.js';
+import { queueSignature, replyMark, sendNextTitle, staleHead } from '../public/queue.js';
 
 /** 送信してよい状態のエージェントを基本に、指定したフィールドだけを変えたものを作ります */
 const agent = (fields = {}) => ({ alive: true, pending: [], state: 'idle', queue: [], queuePaused: false, queueNote: '', ...fields });
@@ -447,11 +447,53 @@ test('一時停止中のキューの先頭が古い判断のときだけ、古�
   assert.equal(staleHead(paused, null), head);
   // 対象の提案がまだ判断待ちなら、通常の再開で送れます
   assert.equal(staleHead(paused, openKey), null);
-  // 古いかどうか分からないときは通常の再開にし、サーバの照合に任せます
+  // 古いかどうか分からず、一時停止の理由も古い判断ではないときは通常の再開にし、サーバの照合に任せます
   assert.equal(staleHead(paused, undefined), null);
   // 一時停止していない、先頭が判断でない、対象の記録がない場合も通常どおりです
   assert.equal(staleHead({ ...paused, queuePaused: false }, staleKey), null);
   assert.equal(staleHead({ ...paused, queue: [item('x1'), head] }, staleKey), null);
   assert.equal(staleHead({ ...paused, queue: [item('r1', '判断', { reply: true })] }, staleKey), null);
   assert.equal(staleHead(agent({ queuePaused: true }), staleKey), null);
+});
+
+test('古いかどうか分からない間も、古い判断が理由の一時停止なら、古い判断の扱いを選ぶ再開ボタンを出す', () => {
+  // 会話の取得に失敗し続けるなどで openKey が分からないままでも、「再開」を押して照合で再び止まるだけにならないようにします
+  const head = item('r1', '判断', { reply: true, proposal: openKey });
+  for (const queueNote of [STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE]) {
+    const paused = agent({ queue: [head, item('x1')], queuePaused: true, queueNote });
+    assert.equal(staleHead(paused, undefined), head, queueNote);
+    // 先頭が判断でない、対象の記録がない判断は、サーバが照合せずに送るので通常の再開にします
+    assert.equal(staleHead({ ...paused, queue: [item('x1'), head] }, undefined), null);
+    assert.equal(staleHead({ ...paused, queue: [item('r1', '判断', { reply: true })] }, undefined), null);
+    assert.equal(staleHead({ ...paused, queuePaused: false }, undefined), null);
+  }
+  // 古い判断以外の理由（手動・提案・中断など）で止まっている場合は通常の再開です
+  for (const queueNote of [MANUAL_PAUSE_NOTE, PROPOSAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE]) {
+    assert.equal(staleHead(agent({ queue: [head], queuePaused: true, queueNote }), undefined), null, queueNote);
+  }
+  // 古いかどうかが分かるときは、一時停止の理由ではなく照合の結果で決めます（対象の提案がまだ判断待ちなら通常の再開）
+  assert.equal(staleHead(agent({ queue: [head], queuePaused: true, queueNote: STALE_REPLY_ANSWERED_NOTE }), openKey), null);
+});
+
+test('「先頭を今すぐ送信」の説明には、先頭が古い判断のときだけ照合せずに送ることを添える', () => {
+  const head = item('r1', '判断', { reply: true, proposal: openKey });
+  const paused = agent({ queue: [head], queuePaused: true, queueNote: STALE_REPLY_ANSWERED_NOTE });
+  assert.match(sendNextTitle(paused, null), /^一時停止中でも先頭の 1 件だけを送信します。.*照合せずに/);
+  assert.match(sendNextTitle(paused, undefined), /照合せずに/);
+  assert.equal(sendNextTitle(paused, openKey), '一時停止中でも先頭の 1 件だけを送信します');
+  assert.equal(sendNextTitle(agent({ queue: [item('x1')] }), null), '一時停止中でも先頭の 1 件だけを送信します');
+});
+
+test('キューの描き直しの判定値は、判断待ちの提案が「分からない」と「ない」を区別する', () => {
+  // JSON.stringify は undefined を null に変えるため、そのまま組み立てると両者の変化で描き直されなくなります
+  const a = agent({ id: 'a1', queue: [item('r1', '判断', { reply: true, proposal: openKey })] });
+  assert.notEqual(queueSignature(a, undefined), queueSignature(a, null));
+  assert.notEqual(queueSignature(a, null), queueSignature(a, openKey));
+  assert.equal(queueSignature(a, openKey), queueSignature({ ...a }, openKey));
+  // 表示に関わる値が変わると判定値も変わります
+  assert.notEqual(queueSignature(a, null), queueSignature({ ...a, queuePaused: true }, null));
+  assert.notEqual(queueSignature(a, null), queueSignature({ ...a, queueNote: MANUAL_PAUSE_NOTE }, null));
+  assert.notEqual(queueSignature(a, null), queueSignature({ ...a, state: 'running' }, null));
+  assert.notEqual(queueSignature(a, null), queueSignature({ ...a, queue: [] }, null));
+  assert.equal(queueSignature(null, undefined), '');
 });
