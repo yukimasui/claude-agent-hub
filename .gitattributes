@@ -1,0 +1,3 @@
+# 同梱している外部ライブラリの配布ファイル（圧縮済み）です。内容は SHA256SUMS のハッシュで確かめるため、
+# 差分表示と GitHub の言語統計から除きます。
+public/vendor/**/*.min.js -diff linguist-vendored

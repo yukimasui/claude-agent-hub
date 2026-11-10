@@ -1,6 +1,6 @@
 // 依存なしの軽量 Markdown レンダラにゃ。
 // 見出し・リスト（入れ子・タスク）・表・引用・水平線・コードブロック・インライン装飾・リンクに対応するにゃ。
-// ```mermaid は CDN から mermaid を遅延読み込みして図にするにゃ（読めなければコードのまま表示）
+// ```mermaid は同梱の mermaid（public/vendor/mermaid/）を遅延読み込みして図にするにゃ（読めなければコードのまま表示）
 
 export const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -183,15 +183,35 @@ export function renderMarkdown(src) {
 
 // ---------- mermaid ----------
 
-const MERMAID_URL = 'https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.esm.min.mjs';
+// mermaid はハブのサーバから配信する同梱ファイルを使います。CDN から読み込むと、配信内容が差し替えられた
+// 場合に画面と同じオリジンでハブの API を操作できてしまうためです（docs/architecture.md の「mermaid の同梱」）。
+// ESM 版は多数のチャンクに分かれているので、1 ファイルで完結する UMD 版を <script> で読み込み、window.mermaid を使います。
+export const MERMAID_SRC = '/vendor/mermaid/mermaid.min.js';
 const svgCache = new Map();
 let mermaidPromise = null;
 let seq = 0;
 
+/** classic script として読み込みます。UMD 版は ES モジュールとしては読めないため、import() ではなく <script> を使います */
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src;
+    s.async = true;
+    s.onload = () => resolve();
+    s.onerror = () => {
+      s.remove();
+      reject(new Error(`${src} を読み込めませんでした`));
+    };
+    document.head.append(s);
+  });
+}
+
 function loadMermaid() {
-  mermaidPromise ||= import(MERMAID_URL).then((m) => {
-    m.default.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
-    return m.default;
+  mermaidPromise ||= loadScript(MERMAID_SRC).then(() => {
+    const m = window.mermaid;
+    if (!m) throw new Error('mermaid が見つかりません');
+    m.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'strict' });
+    return m;
   });
   return mermaidPromise;
 }
@@ -214,7 +234,7 @@ export async function hydrate(root) {
   try {
     mermaid = await loadMermaid();
   } catch {
-    return; // オフラインなどで読めなければコード表示のままにゃ
+    return; // 同梱ファイルを読み込めない場合は、コードのまま表示します
   }
   for (const b of rest) {
     if (!b.isConnected || b.dataset.done) continue;

@@ -46,7 +46,7 @@ npm start
 | 文書 | 内容 |
 |---|---|
 | [使い方](docs/usage.md) | エージェントの作成と管理、画面操作、ブラウザからの回答、タスクキューと送信、提案の仕分け、猫のステータス表示、既知の制約 |
-| [仕組み](docs/architecture.md) | hook とサーバの構成、状態の判定、データの保存先 |
+| [仕組み](docs/architecture.md) | hook とサーバの構成、状態の判定、mermaid の同梱、データの保存先 |
 | [設定](docs/configuration.md) | 環境変数の一覧 |
 
 ## 開発
