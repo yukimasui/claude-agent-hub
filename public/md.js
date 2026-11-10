@@ -48,7 +48,9 @@ function proposalsBlock(code) {
     return `<pre class="code" data-lang="proposals">${esc(code)}</pre>`;
   }
   return `<div class="proposals-block"><div class="pb-head">${inline(String(title))}</div><ol>${items
-    .map((it) => `<li><b>${inline(String(it.title))}</b>${it.detail ? `<div class="muted">${inline(String(it.detail))}</div>` : ''}</li>`)
+    // 補足は改行や箇条書きを含むことがあるため、インライン装飾だけでなく Markdown として描画します
+    // （1 行のインライン要素にすると、改行が失われて行頭の「- 」も本文に混ざります）
+    .map((it) => `<li><b>${inline(String(it.title))}</b>${it.detail ? `<div class="pb-detail md">${renderMarkdown(String(it.detail))}</div>` : ''}</li>`)
     .join('')}</ol></div>`;
 }
 

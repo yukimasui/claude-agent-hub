@@ -62,7 +62,24 @@ test('コードブロックは中身をエスケープし、mermaid は図にす
 test('proposals ブロックは提案の一覧として表示し、JSON が壊れていればコードのまま表示する', () => {
   assert.equal(
     renderMarkdown('```proposals\n{"title":"改善案","items":[{"id":"1","title":"**短く**","detail":"説明"}]}\n```'),
-    '<div class="proposals-block"><div class="pb-head">改善案</div><ol><li><b><strong>短く</strong></b><div class="muted">説明</div></li></ol></div>',
+    '<div class="proposals-block"><div class="pb-head">改善案</div><ol><li><b><strong>短く</strong></b><div class="pb-detail md"><p>説明</p></div></li></ol></div>',
   );
   assert.equal(renderMarkdown('```proposals\n壊れた\n```'), '<pre class="code" data-lang="proposals">壊れた</pre>');
+});
+
+test('proposals ブロックの補足は Markdown として描画し、改行と箇条書きを保つ', () => {
+  // 補足を 1 行のインライン要素にすると、改行が失われ「- 」も本文に混ざって詰まって見えるため
+  const detail = '理由: 読み手が迷う\n変更: 次の 2 点\n- 手順を足す\n- `npm test` を載せる';
+  const html = renderMarkdown('```proposals\n' + JSON.stringify({ items: [{ title: 'A', detail }] }) + '\n```');
+  assert.match(
+    html,
+    /<div class="pb-detail md"><p>理由: 読み手が迷う<br>変更: 次の 2 点<\/p><ul><li>手順を足す<\/li><li><code>npm test<\/code> を載せる<\/li><\/ul><\/div>/,
+  );
+});
+
+test('proposals ブロックの補足は HTML として解釈しない', () => {
+  const html = renderMarkdown('```proposals\n' + JSON.stringify({ items: [{ title: 'A', detail: '<img src=x onerror=alert(1)>\n- <b>太字</b>' }] }) + '\n```');
+  assert.doesNotMatch(html, /<img|<b>太字/);
+  assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /<li>&lt;b&gt;太字&lt;\/b&gt;<\/li>/);
 });

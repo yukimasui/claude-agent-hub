@@ -128,6 +128,17 @@ export function composeReply(state) {
   return parts.join('\n\n');
 }
 
+// ---------- カードの補足 ----------
+
+/**
+ * ボードのカードに載せる補足の HTML を返します（補足が無ければ空文字）。
+ * 改行や箇条書きを保つため Markdown として描画します。高さは一覧しやすいよう CSS（.tri-detail）で抑えます。
+ * テストできるよう DOM には触れず、文字列だけを組み立てます。
+ */
+export function cardDetailHtml(detail) {
+  return detail ? `<div class="tri-detail md">${renderMarkdown(detail)}</div>` : '';
+}
+
 // ---------- 拡大表示 ----------
 
 // 拡大表示の判断ボタンです。ボードのカードと同じキーで操作できるよう、キーの割り当てもここにまとめます
@@ -215,7 +226,7 @@ export function openBoard(root, opts) {
 
   const cardHtml = (it) => `<div class="tri-card" draggable="true" tabindex="0" data-id="${esc(it.id)}">
       <div class="tri-title"><span class="tri-num">${esc(it.id)}</span><span class="tri-text">${inline(it.title)}</span><button type="button" class="tri-expand" data-view title="拡大表示 (Enter)" aria-label="拡大表示">⤢</button></div>
-      ${it.detail ? `<div class="tri-detail">${inline(it.detail).replace(/\n/g, '<br>')}</div>` : ''}
+      ${cardDetailHtml(it.detail)}
       ${it.decision === 'change' ? `<textarea class="tri-note" rows="2" placeholder="どのように修正して実施するかを入力してください">${esc(it.note)}</textarea>` : ''}
       <div class="tri-btns">
         ${it.decision !== 'ok' ? '<button type="button" data-to="ok" title="採用 (A)">✓ 採用</button>' : ''}

@@ -2,7 +2,7 @@
 // （localStorage や描画を扱う関数は対象外です）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { composeReply, extractListItems, findOpenProposals, neighborId, parseProposals, viewerHtml } from '../public/triage.js';
+import { cardDetailHtml, composeReply, extractListItems, findOpenProposals, neighborId, parseProposals, viewerHtml } from '../public/triage.js';
 
 const block = (body) => `前置きの説明\n\`\`\`proposals\n${body}\n\`\`\`\n後書き`;
 
@@ -153,4 +153,18 @@ test('viewerHtml は補足の無い提案にその旨を表示し、見つから
   assert.match(html, /補足の説明はありません/);
   assert.match(html, /data-nav="-1"[^>]*disabled/);
   assert.equal(viewerHtml(viewerItems, '9'), '');
+});
+
+// ---------- カードの補足 ----------
+
+test('cardDetailHtml は補足の箇条書きを Markdown として描画し、記号「- 」を本文に残さない', () => {
+  const html = cardDetailHtml('理由: 読み手が迷う\n- 手順を足す\n- **短く**する');
+  assert.equal(html, '<div class="tri-detail md"><p>理由: 読み手が迷う</p><ul><li>手順を足す</li><li><strong>短く</strong>する</li></ul></div>');
+  assert.doesNotMatch(html, /- 手順/);
+});
+
+test('cardDetailHtml は改行を保ち、補足の HTML をエスケープし、補足が無ければ空文字を返す', () => {
+  assert.equal(cardDetailHtml('一行目\n二行目'), '<div class="tri-detail md"><p>一行目<br>二行目</p></div>');
+  assert.equal(cardDetailHtml('<script>alert(1)</script>'), '<div class="tri-detail md"><p>&lt;script&gt;alert(1)&lt;/script&gt;</p></div>');
+  assert.equal(cardDetailHtml(''), '');
 });
