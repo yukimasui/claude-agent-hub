@@ -1,8 +1,13 @@
 // 提案（proposals ブロック）の出力と、判断待ちの提案があるときのキューの一時停止、
-// および仕分けボードと同じ方法で判断をキューに入れたときに判断から送られることを確かめます。
-import { brief, check, createAgent, log, queue, sleep, soft, transcriptOf, waitFor } from '../lib.mjs';
+// 仕分けボードと同じ方法で判断をキューに入れたときに判断から送られること、
+// および判断を入れた後に対象の提案が古くなった場合は判断を送らずに一時停止することを確かめます。
+import { brief, check, createAgent, log, queue, send, sleep, soft, transcriptOf, waitFor } from '../lib.mjs';
+import { findOpenProposals, proposalKey } from '../../../public/triage.js';
+import { MANUAL_PAUSE_NOTE, STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE } from '../../../lib/queue.js';
 
-export const description = '提案ブロックの出力と、判断待ちの提案があるときのキューの一時停止・判断のキュー追加';
+export const description = '提案ブロックの出力と、判断待ちの提案があるときのキューの一時停止・判断のキュー追加・古くなった判断の一時停止';
+
+const userTexts = async (id) => (await transcriptOf(id)).filter((i) => i.role === 'user').map((i) => i.text);
 
 export default async function run() {
   const a = await createAgent({
@@ -28,14 +33,47 @@ export default async function run() {
   check(s.queuePaused && s.queue.length === 1, '判断待ちの提案があるとキューを一時停止する', brief(s));
   check(/提案/.test(s.queueNote), '一時停止の理由が表示される', s.queueNote);
 
-  // 仕分けボードの「キューに追加」と同じく reply を付けて追加し、手動の操作なしに判断から送られることを確かめます
+  // 仕分けボードの「キューに追加」と同じく reply と対象の提案の識別子を付けて追加し、手動の操作なしに判断から送られることを確かめます
+  const first = findOpenProposals(items);
+  const firstKey = first ? proposalKey(first) : null;
+  check(!!firstKey, '判断待ちの提案を画面と同じ方法で特定できる');
   const reply = 'すべて却下します。「判断を受け取りました」とだけ答えてください。';
-  const r = await queue(a.id, { op: 'add', text: reply, reply: true });
+  const r = await queue(a.id, { op: 'add', text: reply, reply: true, proposal: firstKey });
   check(r.queue[0]?.text === reply && r.queue.length === 2, '判断はキューの先頭に入る', JSON.stringify(r.queue));
   s = await waitFor(a.id, (x) => !x.queue.length && x.state === 'done', 'キューの送信完了', 240000);
   check(!s.queuePaused, '判断の送信後は再び一時停止しない', brief(s));
-  const users = (await transcriptOf(a.id)).filter((i) => i.role === 'user').map((i) => i.text);
+  const users = await userTexts(a.id);
   const iReply = users.findIndex((t) => t.includes('判断を受け取りました'));
   const iItem = users.findIndex((t) => t.includes('キューの項目'));
   check(iReply >= 0 && iItem > iReply, '判断がほかの項目より先に送られる', JSON.stringify(users.slice(-3)));
+
+  // ---- 古くなった判断 ----
+  // 返答済みの最初の提案への判断を入れると、重ねて送らずに一時停止します（Claude は動かないのでトークンを使いません）
+  const stale = '古い判断です。「古い判断を受け取りました」とだけ答えてください。';
+  await queue(a.id, { op: 'add', text: stale, reply: true, proposal: firstKey });
+  s = await waitFor(a.id, (x) => x.queuePaused, '返答済みの提案への判断による一時停止', 20000);
+  check(s.queueNote === STALE_REPLY_ANSWERED_NOTE, '返答済みの提案への判断は送らずに一時停止し、理由を表示する', s.queueNote);
+
+  // 手動の一時停止に切り替えてから新しい提案を出させ、「再開」したときに古い判断が新しい提案への返答として送られないことを確かめます。
+  // 古い判断による一時停止のまま「再開」すると、利用者が送ると決めたものとして照合せずに送るためです
+  await queue(a.id, { op: 'pause' });
+  await send(a.id, 'README.md の改善案をもう一度 2 つ考えて、どれを採用するか私に個別に判断させてください。ファイルは変更しないでください。');
+  await waitFor(a.id, (x) => x.state === 'running', '実行中');
+  s = await waitFor(a.id, (x) => x.state === 'done', '2 つ目の提案の応答完了', 180000);
+  const second = findOpenProposals(await transcriptOf(a.id));
+  if (!soft(!!second && proposalKey(second) !== firstKey, '新しい提案が出る')) {
+    log('新しい提案ブロックが無いため、新しい提案による一時停止は確認できませんでした');
+    return;
+  }
+  check(s.queuePaused && s.queueNote === MANUAL_PAUSE_NOTE, '手動の一時停止が続いている', brief(s));
+  await queue(a.id, { op: 'resume' });
+  s = await waitFor(a.id, (x) => x.queuePaused, '新しい提案による一時停止', 20000);
+  check(s.queueNote === STALE_REPLY_NEW_PROPOSAL_NOTE, '新しい提案が出た後は古い判断を送らずに一時停止し、理由を表示する', s.queueNote);
+  check(s.queue.length === 1 && s.queue[0].text === stale, '古い判断はキューに残る', JSON.stringify(s.queue));
+  check(!(await userTexts(a.id)).some((t) => t.includes('古い判断を受け取りました')), '古い判断は送られていない');
+
+  // 理由を確かめたうえで「再開」すると、古い判断をそのまま送ります
+  await queue(a.id, { op: 'resume' });
+  s = await waitFor(a.id, (x) => !x.queue.length && x.state === 'done', '古い判断の送信完了', 180000);
+  check((await userTexts(a.id)).some((t) => t.includes('古い判断を受け取りました')), '再開すると古い判断をそのまま送る');
 }

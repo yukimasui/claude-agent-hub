@@ -13,7 +13,7 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `lib/config.js` | 設定値の集約。**import した時点で環境変数を読む**ため、環境変数は import より前に設定する |
 | `lib/store.js` | エージェント一覧と状態機械。イベント JSONL の追記分を読み（`ingest`）、`applyEvent` で状態・対話要求（`pending`）・キューの一時停止を更新する |
 | `lib/interactions.js` | 対話要求の分類（`kindOf`）と、ブラウザからの回答を hook の出力 JSON に変換する処理（`buildOutput`） |
-| `lib/queue.js` | 送信ガード（`sendBlockReason`）、キュー操作の受け付け（`applyQueueOp`）、判断待ちの提案の判定（`hasOpenProposals`。画面とそろえるため `public/triage.js` の `findOpenProposals` を使う）。エージェントの状態だけを見て判断し、Store への反映や tmux への送信は `server.js` が行う |
+| `lib/queue.js` | 送信ガード（`sendBlockReason`）、キュー操作の受け付け（`applyQueueOp`）、自動送信の前に提案に関わる理由で一時停止するかの判定（`proposalPauseNote`。判断待ちの提案の有無と、キューの先頭の判断が対象とする提案との照合を行う。画面とそろえるため `public/triage.js` の `findOpenProposals` と `proposalKey` を使う）。エージェントの状態だけを見て判断し、Store への反映や tmux への送信は `server.js` が行う |
 | `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する。画像は参照だけを項目に持たせ、画像 API の要求時に本体を読み出す（`readTranscriptImage`） |
 | `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成、bracketed paste での送信、キー送信、画面取得） |
 | `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`） |

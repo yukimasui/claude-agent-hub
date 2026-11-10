@@ -3,8 +3,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
-  applyQueueOp, hasOpenProposals, sendBlockReason, shouldPauseForProposals,
+  STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE,
+  applyQueueOp, hasOpenProposals, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
+import { proposalKey } from '../public/triage.js';
 
 /** 送信してよい状態のエージェントを基本に、指定したフィールドだけを変えたものを作ります */
 const agent = (fields = {}) => ({ alive: true, pending: [], state: 'idle', queue: [], queuePaused: false, queueNote: '', ...fields });
@@ -207,7 +209,9 @@ test('1 つの応答で壊れたブロックの後に正しいブロックがあ
 
 // ---------- 提案への判断をキューに入れる場合 ----------
 
-const openItems = [{ role: 'user', text: '調べて' }, { role: 'assistant', text: proposals }];
+const openItems = [{ role: 'user', text: '調べて', ts: 't1' }, { role: 'assistant', text: proposals, ts: 't2' }];
+// openItems の提案への判断として、画面（public/app.js）がキューに入れる項目と同じ形の印です
+const openKey = proposalKey(openItems[1]);
 
 test('提案への判断は、ほかの項目より先に入る', () => {
   const r = applyQueueOp(agent({ queue: [item('x1'), item('x2')] }), { op: 'add', text: 'A 案を採用します', reply: true });
@@ -220,12 +224,14 @@ test('提案への判断は、ほかの項目より先に入る', () => {
 
 test('提案のために一時停止していれば、判断を入れたときに一時停止を解除する', () => {
   const a = agent({ queue: [item('x1')], queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE });
-  const r = applyQueueOp(a, { op: 'add', text: 'A 案を採用します', reply: true });
+  // 画面（public/app.js）と同じく、対象の提案の識別子を付けて追加します
+  const r = applyQueueOp(a, { op: 'add', text: 'A 案を採用します', reply: true, proposal: openKey });
   assert.equal(r.fields.queuePaused, false);
   assert.equal(r.fields.queueNote, '');
   assert.equal(r.sendNext, false);
-  // 解除した後の自動送信では、先頭の判断を提案があっても止めずに送ります
-  assert.equal(shouldPauseForProposals({ ...a, ...r.fields }, openItems), false);
+  // 解除した後の自動送信では、先頭の判断が判断待ちの提案と一致するので、提案があっても止めずに送ります
+  assert.equal(r.fields.queue[0].proposal, openKey);
+  assert.equal(proposalPauseNote({ ...a, ...r.fields }, openItems), null);
 });
 
 test('提案以外の理由の一時停止は、判断を入れても解除しない', () => {
@@ -243,20 +249,95 @@ test('提案以外の理由の一時停止は、判断を入れても解除し�
 
 test('一時停止の理由の文言はそれぞれ異なる', () => {
   // 理由は queueNote の文言で見分けるため、文言が重なると提案による一時停止と誤って判別されます
-  const notes = [PROPOSAL_PAUSE_NOTE, MANUAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE];
+  const notes = [PROPOSAL_PAUSE_NOTE, MANUAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE];
   assert.equal(new Set(notes).size, notes.length);
   for (const note of notes) assert.ok(note, '空の文言は理由なしと区別できないため');
 });
 
 test('判断待ちの提案があっても、先頭が判断なら一時停止しない', () => {
-  assert.equal(shouldPauseForProposals(agent({ queue: [item('r1', '判断', { reply: true }), item('x1')] }), openItems), false);
+  assert.equal(proposalPauseNote(agent({ queue: [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')] }), openItems), null);
   // 先頭が判断以外なら、提案への返答より先に無関係な指示が届かないよう一時停止します
-  assert.equal(shouldPauseForProposals(agent({ queue: [item('x1'), item('r1', '判断', { reply: true })] }), openItems), true);
-  assert.equal(shouldPauseForProposals(agent({ queue: [item('x1')] }), openItems), true);
+  assert.equal(proposalPauseNote(agent({ queue: [item('x1'), item('r1', '判断', { reply: true, proposal: openKey })] }), openItems), PROPOSAL_PAUSE_NOTE);
+  assert.equal(proposalPauseNote(agent({ queue: [item('x1')] }), openItems), PROPOSAL_PAUSE_NOTE);
 });
 
 test('判断を送った後は、続く項目のために再び一時停止しない', () => {
   // 判断の送信で利用者の発言が提案の後に続くため、提案は返答済みになります
   const answered = [...openItems, { role: 'user', text: 'A 案を採用します' }, { role: 'assistant', text: '実施しました。' }];
-  assert.equal(shouldPauseForProposals(agent({ queue: [item('x1')] }), answered), false);
+  assert.equal(proposalPauseNote(agent({ queue: [item('x1')] }), answered), null);
+});
+
+// ---------- 判断の対象の提案との照合 ----------
+
+test('判断をキューに入れるときは、対象の提案の識別子を記録する', () => {
+  const r = applyQueueOp(agent(), { op: 'add', text: '判断', reply: true, proposal: openKey });
+  assert.equal(r.fields.queue[0].proposal, openKey);
+  // 文字列でない値や長すぎる値は記録しません（照合しない判断として扱われます）
+  for (const proposal of [123, '', 'x'.repeat(201), null]) {
+    assert.equal('proposal' in applyQueueOp(agent(), { op: 'add', text: '判断', reply: true, proposal }).fields.queue[0], false, String(proposal));
+  }
+  // 判断以外の項目には、識別子が渡されても記録しません
+  assert.equal('proposal' in applyQueueOp(agent(), { op: 'add', text: '次の作業', proposal: openKey }).fields.queue[0], false);
+});
+
+test('判断を入れた後に同じターンで新しい提案が出たら、古い判断を送らずに一時停止する', () => {
+  const a = agent({ queue: [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')] });
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  assert.equal(proposalPauseNote(a, [...openItems, newer]), STALE_REPLY_NEW_PROPOSAL_NOTE);
+});
+
+test('判断を入れた後に利用者の発言を挟んで新しい提案が出たら、古い判断を送らずに一時停止する', () => {
+  const a = agent({ queue: [item('r1', '判断', { reply: true, proposal: openKey })] });
+  const items = [...openItems, { role: 'user', text: '先に別の調査をして', ts: 't3' }, { role: 'assistant', text: proposals, ts: 't4' }];
+  // 本文が同じ提案でも、別の応答なので古い判断の対象ではありません
+  assert.equal(proposalPauseNote(a, items), STALE_REPLY_NEW_PROPOSAL_NOTE);
+});
+
+test('判断の対象の提案にすでに返答があれば、判断を重ねて送らずに一時停止する', () => {
+  // ターミナルや入力欄から先に返答した場合です。判断を送ると同じ提案に二重に返答することになります
+  const a = agent({ queue: [item('r1', '判断', { reply: true, proposal: openKey })] });
+  const answered = [...openItems, { role: 'user', text: 'A 案で進めて', ts: 't3' }, { role: 'assistant', text: '進めました。', ts: 't4' }];
+  assert.equal(proposalPauseNote(a, answered), STALE_REPLY_ANSWERED_NOTE);
+});
+
+test('対象の提案を記録していない判断は、照合せずに送る', () => {
+  // 照合を始める前にキューに入っていた判断（agents.json から復元したもの）は、これまでどおり扱います
+  const a = agent({ queue: [item('r1', '判断', { reply: true })] });
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  assert.equal(proposalPauseNote(a, [...openItems, newer]), null);
+  assert.equal(proposalPauseNote(a, []), null);
+});
+
+test('古い判断による一時停止から再開すると、先頭の判断を照合せずに送れるようにする', () => {
+  // 「再開」は、利用者が内容を確かめたうえでそのまま送ると決めた操作です
+  const queue = [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')];
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  for (const queueNote of [STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE]) {
+    const a = agent({ queue, queuePaused: true, queueNote });
+    const r = applyQueueOp(a, { op: 'resume' });
+    assert.equal(r.fields.queuePaused, false, queueNote);
+    assert.equal(r.fields.queueNote, '', queueNote);
+    assert.deepEqual(r.fields.queue[0], { id: 'r1', text: '判断', clearFirst: false, createdAt: 1, reply: true }, queueNote);
+    assert.equal(r.fields.queue[1], queue[1], queueNote);
+    assert.equal(proposalPauseNote({ ...a, ...r.fields }, [...openItems, newer]), null, queueNote);
+    // 元のキューは書き換えません
+    assert.equal(queue[0].proposal, openKey, queueNote);
+  }
+  // 手動の一時停止からの再開では、照合の記録を残します（古くなっていれば送る前に改めて止めるため）
+  const manual = applyQueueOp(agent({ queue, queuePaused: true, queueNote: MANUAL_PAUSE_NOTE }), { op: 'resume' });
+  assert.equal(manual.fields.queue[0].proposal, openKey);
+});
+
+test('古い判断による一時停止中に新しい判断を入れると、一時停止を解除して新しい判断から送る', () => {
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  const items = [...openItems, newer];
+  const a = agent({ queue: [item('r1', '古い判断', { reply: true, proposal: openKey })], queuePaused: true, queueNote: STALE_REPLY_NEW_PROPOSAL_NOTE });
+  const r = applyQueueOp(a, { op: 'add', text: '新しい判断', reply: true, proposal: proposalKey(newer) });
+  assert.equal(r.fields.queuePaused, false);
+  assert.equal(r.fields.queueNote, '');
+  assert.deepEqual(r.fields.queue.map((x) => x.text), ['新しい判断', '古い判断']);
+  assert.equal(proposalPauseNote({ ...a, ...r.fields }, items), null);
+  // 新しい判断を送った後、古い判断は対象の提案に返答済みになるので、順番が来たときに改めて止まります
+  const after = { ...a, ...r.fields, queue: r.fields.queue.slice(1) };
+  assert.equal(proposalPauseNote(after, [...items, { role: 'user', text: '新しい判断', ts: 't4' }]), STALE_REPLY_ANSWERED_NOTE);
 });

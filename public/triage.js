@@ -59,6 +59,22 @@ export function findOpenProposals(items) {
   return null;
 }
 
+function hashText(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+
+/**
+ * 提案を含む応答（findOpenProposals などで得た会話の項目）を見分けるための文字列を返します。
+ * 会話の項目には応答ごとの ID がないため、時刻と本文のハッシュを組み合わせます。
+ * キューに入れた判断がどの提案に対するものかを記録し、送る前に判断待ちの提案と照合するために使います（lib/queue.js）。
+ * 画面とサーバで同じ値になるよう、この関数だけで組み立ててください。
+ */
+export function proposalKey(it) {
+  return `${it.ts}|${hashText(String(it.text ?? ''))}`;
+}
+
 /** 本文のトップレベルの箇条書き・番号付きリストを項目として取り出すにゃ */
 export function extractListItems(text) {
   const lines = String(text || '')

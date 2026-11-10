@@ -2,7 +2,7 @@
 // （localStorage や描画を扱う関数は対象外です）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cardDetailHtml, composeReply, extractListItems, findOpenProposals, neighborId, parseProposals, viewerHtml } from '../public/triage.js';
+import { cardDetailHtml, composeReply, extractListItems, findOpenProposals, neighborId, parseProposals, proposalKey, viewerHtml } from '../public/triage.js';
 
 const block = (body) => `前置きの説明\n\`\`\`proposals\n${body}\n\`\`\`\n後書き`;
 
@@ -57,6 +57,16 @@ test('findOpenProposals は最後の利用者の発言より後で、項目を�
   assert.equal(findOpenProposals([older, { role: 'user', text: '古い案で' }, empty]), null);
   assert.equal(findOpenProposals([{ role: 'user', text: '調べて' }, empty]), null);
   assert.equal(findOpenProposals([]), null);
+});
+
+test('proposalKey は同じ応答に同じ値を、時刻か本文が異なる応答には異なる値を返す', () => {
+  // キューの判断がどの提案への返答かを照合する値なので、別の提案と同じ値にならないことが重要です
+  const it = { role: 'assistant', text: block('[{"title":"A 案"}]'), ts: '2026-11-11T00:00:00.000Z' };
+  assert.equal(proposalKey(it), proposalKey({ ...it }));
+  assert.notEqual(proposalKey(it), proposalKey({ ...it, ts: '2026-11-11T00:00:01.000Z' }));
+  assert.notEqual(proposalKey(it), proposalKey({ ...it, text: block('[{"title":"B 案"}]') }));
+  // 時刻や本文が欠けた項目でも例外にせず値を返します
+  assert.equal(typeof proposalKey({ role: 'assistant' }), 'string');
 });
 
 test('ブロックの外にある箇条書きは提案として扱わない', () => {

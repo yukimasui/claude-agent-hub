@@ -3,7 +3,7 @@ import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
 import { catAnimationEnabled, catCanvas, mountCats, setCatAnimation, updateCat } from './cats.js';
 import { renderQueue } from './queue.js';
-import { findOpenProposals, isDone, openBoard, parseProposals } from './triage.js';
+import { findOpenProposals, isDone, openBoard, parseProposals, proposalKey } from './triage.js';
 import { thumbsHtml } from './images.js';
 
 const $ = (s) => document.querySelector(s);
@@ -228,12 +228,6 @@ const dismissedTriage = new Set();
 let triageKey = null;
 let chatItems = [];
 
-function hashText(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return (h >>> 0).toString(36);
-}
-
 function closeTriage() {
   $('#triage').hidden = true;
   $('#triage').innerHTML = '';
@@ -245,7 +239,9 @@ function openTriageFor(it, auto) {
   // 判断を求める応答には proposals ブロックを付けるようシステムプロンプトで指示しているため、ブロックの無い箇条書きは対象にしません
   const p = parseProposals(it.text);
   if (!p) return;
-  const key = `${selectedId}|${it.ts}|${hashText(it.text)}`;
+  // 途中経過の保存キーは以前と同じ形（エージェント ID|時刻|本文のハッシュ）なので、保存済みの仕分けもそのまま読めます
+  const proposal = proposalKey(it);
+  const key = `${selectedId}|${proposal}`;
   if (auto && (isDone(key) || dismissedTriage.has(key))) return;
   if (triageKey === key && !$('#triage').hidden) return;
   triageKey = key;
@@ -257,7 +253,7 @@ function openTriageFor(it, auto) {
     onSend: async (text, mode) => {
       const a = agents.find((x) => x.id === agentId);
       try {
-        await sendOrQueue(a, text, mode, false, true);
+        await sendOrQueue(a, text, mode, false, proposal);
         toast(mode === 'queue' ? '判断をキューの先頭に追加しました' : '判断を送信しました');
       } catch (e) {
         toast(e.message);
@@ -274,7 +270,7 @@ function openTriageFor(it, auto) {
 
 /** 最後の応答に未回答の proposals ブロックがあれば自動で開くにゃ */
 function autoTriage(items) {
-  // サーバがキューを一時停止する判定（lib/queue.js の hasOpenProposals）と同じ関数を使います
+  // サーバがキューを一時停止する判定（lib/queue.js の proposalPauseNote）と同じ関数を使います
   const it = findOpenProposals(items);
   if (it) openTriageFor(it, true);
 }
@@ -427,11 +423,12 @@ function setTab(t) {
 
 /**
  * 今すぐ送るかキューに積むにゃ。ダイアログ表示中はサーバが送信を拒否するにゃ。
- * reply は仕分けボードからの提案への判断であることを示します。サーバはキューの先頭に入れ、提案による一時停止を解除します。
+ * proposal は仕分けボードからの判断のときに、対象の提案の proposalKey を渡します。
+ * サーバは判断としてキューの先頭に入れて提案による一時停止を解除し、送る前に対象の提案がまだ判断待ちかを照合します。
  */
-async function sendOrQueue(a, text, mode, clearFirst = false, reply = false) {
+async function sendOrQueue(a, text, mode, clearFirst = false, proposal = null) {
   if (!a) throw new Error('エージェントが選択されていません');
-  if (mode === 'queue') return api('POST', `/api/agents/${a.id}/queue`, { op: 'add', text, clearFirst, reply });
+  if (mode === 'queue') return api('POST', `/api/agents/${a.id}/queue`, { op: 'add', text, clearFirst, reply: !!proposal, proposal });
   return api('POST', `/api/agents/${a.id}/send`, { text });
 }
 

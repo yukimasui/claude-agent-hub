@@ -27,7 +27,7 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { INTERRUPT_PAUSE_NOTE, PROPOSAL_PAUSE_NOTE, applyQueueOp, sendBlockReason, shouldPauseForProposals } from './lib/queue.js';
+import { INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
 import { readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
@@ -264,8 +264,9 @@ async function dispatchNext(id, { force = false } = {}) {
   const a = store.get(id);
   if (!readyForNext(a) || (a.queuePaused && !force)) return;
   // 画面（/api/agents/:id/transcript の既定）と同じ件数を読み、仕分けボードの自動表示と同じ範囲で判定します
-  if (!force && shouldPauseForProposals(a, readTranscript(a.transcriptPath))) {
-    store.patch(id, { queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE });
+  const note = force ? null : proposalPauseNote(a, readTranscript(a.transcriptPath));
+  if (note) {
+    store.patch(id, { queuePaused: true, queueNote: note });
     return;
   }
   dispatching.add(id);
