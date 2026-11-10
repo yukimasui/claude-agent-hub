@@ -1,7 +1,10 @@
 // lib/queue.js のテストです。送信ガード、キュー操作の受け付け、判断待ちの提案の判定を確かめます。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { MAX_QUEUE, PROPOSAL_PAUSE_NOTE, applyQueueOp, hasOpenProposals, sendBlockReason, shouldPauseForProposals } from '../lib/queue.js';
+import {
+  ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
+  applyQueueOp, hasOpenProposals, sendBlockReason, shouldPauseForProposals,
+} from '../lib/queue.js';
 
 /** 送信してよい状態のエージェントを基本に、指定したフィールドだけを変えたものを作ります */
 const agent = (fields = {}) => ({ alive: true, pending: [], state: 'idle', queue: [], queuePaused: false, queueNote: '', ...fields });
@@ -113,9 +116,9 @@ test('並べ替えは指定した順にし、指定にない項目は元の順�
 test('一時停止と再開はキューを変えずに一時停止の状態とメモを切り替える', () => {
   const queue = [item('x1')];
   const paused = applyQueueOp(agent({ queue }), { op: 'pause' });
-  assert.deepEqual(paused, { fields: { queue, queuePaused: true, queueNote: '手動で一時停止中' }, sendNext: false });
+  assert.deepEqual(paused, { fields: { queue, queuePaused: true, queueNote: MANUAL_PAUSE_NOTE }, sendNext: false });
 
-  const resumed = applyQueueOp(agent({ queue, queuePaused: true, queueNote: '判断待ちの提案があるため一時停止しました' }), { op: 'resume' });
+  const resumed = applyQueueOp(agent({ queue, queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE }), { op: 'resume' });
   assert.deepEqual(resumed, { fields: { queue, queuePaused: false, queueNote: '' }, sendNext: false });
 });
 
@@ -124,7 +127,7 @@ test('一時停止と再開はキューを変えずに一時停止の状態と�
 test('先頭の送信は一時停止中でも受け付け、一時停止の状態は変えない', () => {
   const queue = [item('x1'), item('x2')];
   for (const state of ['idle', 'done']) {
-    const r = applyQueueOp(agent({ state, queue, queuePaused: true, queueNote: '手動で一時停止中' }), { op: 'sendNext' });
+    const r = applyQueueOp(agent({ state, queue, queuePaused: true, queueNote: MANUAL_PAUSE_NOTE }), { op: 'sendNext' });
     assert.deepEqual(r, { fields: { queue }, sendNext: true }, state);
   }
 });
@@ -226,8 +229,9 @@ test('提案のために一時停止していれば、判断を入れたとき�
 });
 
 test('提案以外の理由の一時停止は、判断を入れても解除しない', () => {
-  // 手動の一時停止や中断による一時停止は利用者の意図なので、1 回の「再開」で判断から送られる状態にとどめます
-  for (const queueNote of ['手動で一時停止中', '中断したため一時停止しました']) {
+  // 手動の一時停止や中断による一時停止は利用者の意図なので、1 回の「再開」で判断から送られる状態にとどめます。
+  // エラーによる一時停止も、原因を確かめてから再開できるよう残します
+  for (const queueNote of [MANUAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE]) {
     const r = applyQueueOp(agent({ queue: [item('x1')], queuePaused: true, queueNote }), { op: 'add', text: '判断', reply: true });
     assert.equal('queuePaused' in r.fields, false, queueNote);
     assert.equal(r.fields.queue[0].text, '判断', queueNote);
@@ -235,6 +239,13 @@ test('提案以外の理由の一時停止は、判断を入れても解除し�
   // 通常の追加では、提案による一時停止も解除しません（提案への返答にはならないため）
   const plain = applyQueueOp(agent({ queuePaused: true, queueNote: PROPOSAL_PAUSE_NOTE }), { op: 'add', text: '次の作業' });
   assert.equal('queuePaused' in plain.fields, false);
+});
+
+test('一時停止の理由の文言はそれぞれ異なる', () => {
+  // 理由は queueNote の文言で見分けるため、文言が重なると提案による一時停止と誤って判別されます
+  const notes = [PROPOSAL_PAUSE_NOTE, MANUAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE];
+  assert.equal(new Set(notes).size, notes.length);
+  for (const note of notes) assert.ok(note, '空の文言は理由なしと区別できないため');
 });
 
 test('判断待ちの提案があっても、先頭が判断なら一時停止しない', () => {

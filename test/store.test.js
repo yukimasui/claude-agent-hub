@@ -11,6 +11,7 @@ const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-test-'));
 process.env.AGENT_HUB_HOME = home;
 const { AGENTS_FILE, EVENTS_DIR, REQUESTS_DIR } = await import('../lib/config.js');
 const { Store, publicAgent } = await import('../lib/store.js');
+const { ERROR_PAUSE_NOTE, MANUAL_PAUSE_NOTE } = await import('../lib/queue.js');
 
 after(() => fs.rmSync(home, { recursive: true, force: true }));
 
@@ -173,7 +174,7 @@ test('StopFailure はキューを一時停止して保存し、キューが空�
   assert.equal(a.state, 'done');
   assert.equal(a.activity, 'エラーで停止しました: rate_limit');
   assert.equal(a.queuePaused, true);
-  assert.equal(a.queueNote, 'エラーで停止したため一時停止しました');
+  assert.equal(a.queueNote, ERROR_PAUSE_NOTE);
   const saved = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8')).find((x) => x.id === id);
   assert.equal(saved.queuePaused, true);
 
@@ -183,9 +184,9 @@ test('StopFailure はキューを一時停止して保存し、キューが空�
 });
 
 test('すでに一時停止中のキューは理由を上書きしない', () => {
-  const { emit } = setup({ queue: [{ id: 'q1', text: 't' }], queuePaused: true, queueNote: '手動で一時停止中' });
+  const { emit } = setup({ queue: [{ id: 'q1', text: 't' }], queuePaused: true, queueNote: MANUAL_PAUSE_NOTE });
   const a = emit({ event: 'StopFailure' });
-  assert.equal(a.queueNote, '手動で一時停止中');
+  assert.equal(a.queueNote, MANUAL_PAUSE_NOTE);
 });
 
 test('Notification は種類に応じて要対応・完了に振り分ける', () => {

@@ -27,7 +27,7 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { PROPOSAL_PAUSE_NOTE, applyQueueOp, sendBlockReason, shouldPauseForProposals } from './lib/queue.js';
+import { INTERRUPT_PAUSE_NOTE, PROPOSAL_PAUSE_NOTE, applyQueueOp, sendBlockReason, shouldPauseForProposals } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
 import { readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
@@ -410,7 +410,7 @@ async function api(req, res, url) {
       // 実行中の Esc / Ctrl+C は中断扱いにするにゃ（中断では Stop hook が来ないため）
       if ((body.key === 'Escape' || body.key === 'C-c') && a.state === 'running') {
         // 中断した直後に次のキューが流れないよう一時停止もするにゃ
-        const paused = a.queue.length ? { queuePaused: true, queueNote: '中断したため一時停止しました' } : {};
+        const paused = a.queue.length ? { queuePaused: true, queueNote: INTERRUPT_PAUSE_NOTE } : {};
         store.patch(a.id, { state: 'idle', activity: '中断しました', stateSince: Date.now(), ...paused });
       }
       return send(res, 200, { ok: true });
