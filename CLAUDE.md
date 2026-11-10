@@ -15,11 +15,12 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `lib/interactions.js` | 対話要求の分類（`kindOf`）と、ブラウザからの回答を hook の出力 JSON に変換する処理（`buildOutput`） |
 | `lib/queue.js` | 送信ガード（`sendBlockReason`）、キュー操作の受け付け（`applyQueueOp`）、自動送信の前に提案に関わる理由で一時停止するかの判定（`proposalPauseNote`。判断待ちの提案の有無と、キューの先頭の判断が対象とする提案との照合を行う。画面とそろえるため `public/triage.js` の `findOpenProposals` と `proposalKey` を使う）。エージェントの状態だけを見て判断し、Store への反映や tmux への送信は `server.js` が行う |
 | `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する。画像は参照だけを項目に持たせ、画像 API の要求時に本体を読み出す（`readTranscriptImage`） |
+| `lib/subagents.js` | サブエージェントの一覧と状態を、親のセッションの `subagents/` にある記録（meta.json と transcript）から組み立てる（`listSubagents`）。サブエージェントの会話の読み出し（`readSubagentTranscript`）もここで行い、`subagents/` の外を読まないよう確かめる |
 | `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成、bracketed paste での送信、キー送信、画面取得） |
 | `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`） |
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |
 | `hooks/summarize.cjs` | ツール入力の 1 行要約（hook とサーバの両方から使う） |
-| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`app.js` |
+| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`app.js` |
 | `public/vendor/` | 利用者の了承を得て同梱しているブラウザ用ライブラリ（現在は mermaid）。配布ファイルを改変せずに置き、取得元・照合方法・更新手順は各ディレクトリの `README.md` に記載する |
 | `test/` | `node:test` による単体テスト（Claude を起動しない） |
 | `scripts/dev.mjs` | 開発用ハブのランチャー |
@@ -131,6 +132,7 @@ npm run e2e:ui                       # モードの一覧
 npm run e2e:ui -- shot [エージェントID]   # 既存のエージェントの画面を撮影（Claude は起動しない）
 npm run e2e:ui -- question           # 質問カードをクリック操作で回答
 npm run e2e:ui -- triage             # 提案の仕分けボードをドラッグ＆ドロップで操作
+npm run e2e:ui -- subagent           # サブエージェントのツリーと会話の表示を確認
 ```
 
 playwright-core はリポジトリの依存に含めていません。手元にあるものを `PLAYWRIGHT_CORE_PATH`（playwright-core のディレクトリ）で、ブラウザを `PLAYWRIGHT_CHROMIUM_EXECUTABLE` で指定できます。見つからない場合は導入方法を表示して終了します。スクリーンショットは `E2E_SHOTS_DIR`（既定は一時ディレクトリ）に保存されます。

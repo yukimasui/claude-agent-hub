@@ -293,6 +293,44 @@ canvas.cat { image-rendering: pixelated; image-rendering: crisp-edges; display: 
 .status-bar { min-height: 42px; }
 #empty-cat { display: flex; justify-content: center; margin-bottom: 12px; }
 
+/* ---------- サブエージェントのツリー ---------- */
+/* 親エージェントのカードより小さい 1 行の行にして、多くのサブエージェントがあっても一覧が長くなりすぎないようにしています */
+.sub {
+  position: relative;
+  display: flex; align-items: center; gap: 6px;
+  margin: -2px 0 2px; padding: 1px 8px 1px calc(26px + var(--depth, 0) * 14px);
+  border-radius: 6px; border: 1px solid transparent;
+  font-size: 12px; cursor: pointer; min-height: 20px;
+}
+/* 枝の線です。兄弟の最後の行（last）だけ途中で止めて「└」の形にします */
+.sub::before {
+  content: ''; position: absolute; left: calc(16px + var(--depth, 0) * 14px); top: -3px; bottom: -3px;
+  border-left: 1px solid var(--line);
+}
+.sub.last::before { bottom: 50%; }
+.sub::after {
+  content: ''; position: absolute; left: calc(16px + var(--depth, 0) * 14px); top: 50%; width: 8px;
+  border-top: 1px solid var(--line);
+}
+.sub:hover { background: var(--panel-2); }
+.sub.selected { background: var(--panel-2); border-color: var(--line); }
+.sub .sub-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.sub.st-running .sub-name, .sub.st-waiting .sub-name, .sub.selected .sub-name { color: var(--text); }
+.sub .sub-state { font-size: 10.5px; color: var(--st); white-space: nowrap; }
+.sub .elapsed { font-size: 10.5px; }
+.sub.state-waiting { animation: pulse 1.6s ease-in-out infinite; }
+.sub-more { padding: 0 8px 4px 34px; font-size: 11.5px; }
+.sub-chip { padding: 0 6px; font-size: 10.5px; line-height: 1.5; color: var(--muted); white-space: nowrap; }
+.sub-chip.active { color: var(--running); border-color: color-mix(in srgb, var(--running) 40%, var(--line)); }
+.st-failed { --st: var(--waiting); }
+
+/* サブエージェントの表示中は、親エージェント向けの操作部品を隠して読み取り専用の案内を出します */
+.sub-note { display: none; }
+.sub-view .sub-note { display: flex; align-items: center; gap: 12px; border-top: 1px solid var(--line); padding: 10px 16px; background: var(--panel); font-size: 13px; color: var(--muted); }
+.sub-view .sub-note span { flex: 1; }
+.sub-view .sub-note b { color: var(--text); }
+.sub-view .tabs, .sub-view .actions, .sub-view .composer, .sub-view .queue, .sub-view .pending, .sub-view .triage-panel { display: none; }
+
 /* ---------- 入力欄 ---------- */
 .send-col { display: grid; gap: 4px; align-content: start; }
 .send-col button { white-space: nowrap; }

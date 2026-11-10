@@ -38,6 +38,18 @@ claude (tmux pane) ──hook──▶ hooks/hub-hook.cjs ──append──▶ 
 - 中断（Esc / Ctrl+C）では Stop hook が届かないため、ハブのキー送信ボタンから送った場合だけ「待機中」に戻します（[既知の制約](usage.md#既知の制約)）。
 - hook では拾えないクラッシュに備えて、サーバは 2 秒ごとに tmux のペインを確認し、プロセスが終了していれば「終了」にします。
 
+## サブエージェントの状態
+
+サブエージェントの一覧と状態は、hook のイベントではなく、Claude Code の記録ファイルから組み立てます（`lib/subagents.js`）。hook の入力にはサブエージェントの説明や親子関係が含まれないためです。
+
+- Claude Code は、親のセッションの transcript（`<セッション ID>.jsonl`）と同じ場所の `<セッション ID>/subagents/` に、サブエージェントごとの transcript（`agent-<ID>.jsonl`）と起動時の情報（`agent-<ID>.meta.json`。説明・種類・親のサブエージェント・バックグラウンドかどうか・終了したか）を保存します。
+- 状態は、meta.json の終了の記録、親の transcript にある完了通知（`<task-notification>` の status）、親エージェントの状態から判定し、作業内容はサブエージェントの transcript の最後のやり取りから求めます。
+  - 親のプロセスが起動した時刻（`startup` / `resume` の SessionStart と、ハブからの再起動の時刻）より前に記録が止まっていて終了の記録もないものは、前のプロセスとともに止まったとみなして「中断」にします。`compact` / `clear` の SessionStart はプロセスが続くので起動時刻にしません。
+  - 完了の記録（meta.json の更新）の後も transcript が更新されているものは、再開されたとみなして状態を判定し直します。
+  - 完了通知を探すための親の transcript は、前回の続きから 1 回の確認あたり 2MB までを読み、残りは次の確認で読みます。
+- サブエージェント内のツール呼び出しも hook のイベントとして届き、hook は入力の `agent_id` を記録します。サーバはイベントが届くたびと 3 秒ごとに一覧を組み立て直し、変化があれば画面に配信します。`agent_id` は、回答待ちの要求がどのサブエージェントのものかの判別にも使います。
+- サブエージェントの会話の API（`GET /api/agents/<エージェント ID>/subagents/<サブエージェント ID>/transcript`）は、そのエージェントの現在のセッションの `subagents/` にあり、meta.json の記録があるサブエージェントの transcript だけを返します。ID は英数字・`_`・`-` だけを受け付け、シンボリックリンクはたどりません。
+
 ## ブラウザからの回答の受け渡し
 
 質問・計画の承認・権限の確認（`PermissionRequest`）と MCP の入力要求（`Elicitation`）では、hook が要求の内容をファイルに書き出し、ブラウザからの回答を待ちます。

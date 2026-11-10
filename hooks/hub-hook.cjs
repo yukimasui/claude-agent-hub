@@ -77,6 +77,9 @@ process.stdin.on('end', () => {
     if (input.permission_mode) ev.permission_mode = input.permission_mode;
     if (input.mcp_server_name) ev.mcp_server = input.mcp_server_name;
     if (input.error) ev.error = shorten(String(input.error), 300);
+    // サブエージェントの中で発生したイベントには agent_id が付きます（親のイベントには付きません）
+    if (input.agent_id) ev.agent_id = String(input.agent_id).slice(0, 64);
+    if (input.agent_type) ev.agent_type = shorten(String(input.agent_type), 80);
   } catch {
     process.exit(0);
   }

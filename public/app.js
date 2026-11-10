@@ -1,10 +1,11 @@
 // Agent Hub フロントエンドにゃ
 import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
-import { catAnimationEnabled, catCanvas, mountCats, setCatAnimation, updateCat } from './cats.js';
+import { catAnimationEnabled, catCanvas, coatOf, mountCats, setCatAnimation, updateCat } from './cats.js';
 import { renderQueue } from './queue.js';
 import { findOpenProposals, isDone, openBoard, parseProposals, proposalKey } from './triage.js';
 import { thumbsHtml } from './images.js';
+import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -22,7 +23,12 @@ const KIND_LABEL = { question: '質問', plan: '計画の承認', permission: '�
 
 let agents = [];
 let selectedId = load('selectedId');
+// サブエージェントを選んでいるときはその ID です（selectedId は親エージェントのまま）。null なら親エージェントを表示します
+let selectedSub = load('selectedSub');
 let tab = load('tab') || 'chat';
+// 古い完了分をすべて表示している親エージェントと、ツリーを折りたたんでいる親エージェントです
+const expandedSubs = new Set();
+const collapsedSubs = new Set(loadJson('subCollapsed', []));
 const prevStates = new Map();
 const seenEventAt = new Map();
 const seenPending = new Set();
@@ -43,6 +49,13 @@ function save(k, v) {
   try {
     v == null ? localStorage.removeItem('hub.' + k) : localStorage.setItem('hub.' + k, v);
   } catch {}
+}
+function loadJson(k, fallback) {
+  try {
+    return JSON.parse(load(k)) ?? fallback;
+  } catch {
+    return fallback;
+  }
 }
 
 async function api(method, url, body) {
@@ -75,6 +88,9 @@ function elapsed(since) {
 }
 
 const selected = () => agents.find((a) => a.id === selectedId);
+const selectedSubagent = () => (selectedSub ? selected()?.subagents?.find((s) => s.id === selectedSub) || null : null);
+// 会話の表示対象（親エージェントか、そのサブエージェントか）を表すキーです。スクロール位置の扱いや再読み込みの判定に使います
+const viewKey = () => `${selectedId}/${selectedSub || ''}`;
 
 // ---------- サーバとの接続 ----------
 
@@ -110,11 +126,15 @@ function onAgents(list) {
   firstLoad = false;
   agents = list;
   if (!selected()) selectedId = agents[0]?.id ?? null;
+  // 選んでいたサブエージェントが一覧から消えた（/clear で新しいセッションになったなど）場合は親エージェントの表示に戻します
+  if (selectedSub && !selectedSubagent()) setSelectedSub(null);
   renderList();
   renderDetail();
   const a = selected();
-  if (a && seenEventAt.get(a.id) !== a.lastEventAt) {
-    seenEventAt.set(a.id, a.lastEventAt);
+  // サブエージェントの会話は記録ファイルの更新時刻、親エージェントの会話は最後のイベントの時刻が変わったときに読み直します
+  const stamp = selectedSub ? selectedSubagent()?.updatedAt : a?.lastEventAt;
+  if (a && seenEventAt.get(viewKey()) !== stamp) {
+    seenEventAt.set(viewKey(), stamp);
     scheduleTranscript();
   }
   syncPending();
@@ -144,7 +164,12 @@ function renderList() {
     .map((a, i) => {
       const since = a.state === 'running' ? a.turnStartedAt : a.stateSince;
       const kinds = [...new Set(a.pending.map((p) => p.kind))];
-      return `<li class="agent st-${a.state} state-${a.state}${a.id === selectedId ? ' selected' : ''}" data-id="${a.id}">
+      const subs = subagentCounts(a.subagents);
+      const collapsed = collapsedSubs.has(a.id);
+      const subChip = subs.total
+        ? `<button type="button" class="chip sub-chip${subs.active ? ' active' : ''}" data-toggle-sub="${a.id}" aria-expanded="${!collapsed}" title="サブエージェント（作業中 / 全体）。押すとツリーを${collapsed ? '開きます' : '折りたたみます'}">${collapsed ? '▸' : '▾'} サブ ${subs.active}/${subs.total}</button>`
+        : '';
+      return `<li class="agent st-${a.state} state-${a.state}${a.id === selectedId && !selectedSub ? ' selected' : ''}" data-id="${a.id}">
         ${catCanvas({ seed: a.id, coat: a.coat, state: a.state, activity: a.activity, since: a.stateSince, cls: 'cat-icon' })}
         <div class="agent-main">
         <div class="row">
@@ -156,10 +181,11 @@ function renderList() {
         <div class="row">
           <span class="activity">${esc(a.activity)}</span>
           ${a.queue?.length ? `<span class="chip q-chip" title="キューの件数">キュー ${a.queue.length}${a.queuePaused ? '・停止中' : ''}</span>` : ''}
+          ${subChip}
           <span class="elapsed" data-since="${since || ''}">${elapsed(since)}</span>
         </div>
         </div>
-      </li>`;
+      </li>${subs.total && !collapsed ? subtreeHtml(a) : ''}`;
     })
     .join('');
 
@@ -169,11 +195,64 @@ function renderList() {
   document.title = pending ? `(${pending}) Agent Hub` : 'Agent Hub';
 }
 
+/**
+ * 親エージェントの行の下に並べるサブエージェントの行です。
+ * 親と見分けが付くよう、猫は親の半分の大きさにし、毛色は親と同じにしています（親子であることが分かるように）。
+ */
+function subtreeHtml(a) {
+  const coat = coatOf(a.id, a.coat);
+  return subagentRows(a.subagents, { expanded: expandedSubs.has(a.id) })
+    .map((r) => {
+      if (r.type === 'more') {
+        const label = r.expanded ? '古い完了分を隠す' : `完了した ${r.hidden} 件を表示`;
+        return `<li class="sub-more" data-id="${a.id}"><button type="button" class="link">${label}</button></li>`;
+      }
+      const s = r.sub;
+      const since = s.state === 'running' || s.state === 'waiting' ? s.startedAt : s.stateSince;
+      const label = SUB_STATE_LABEL[s.state] || s.state;
+      const sel = a.id === selectedId && s.id === selectedSub ? ' selected' : '';
+      return `<li class="sub st-${s.state} state-${s.state}${r.last ? ' last' : ''}${sel}" data-id="${a.id}" data-sub="${esc(s.id)}" style="--depth:${Math.min(r.depth, 4)}" title="${esc(`${s.description}\n${label}: ${s.activity || ''}`)}">
+        ${catCanvas({ seed: s.id, coat, state: s.state, activity: s.activity, since: s.stateSince, scale: 1, cls: 'cat-mini' })}
+        <span class="sub-name">${esc(s.description)}</span>
+        ${s.state === 'waiting' || s.state === 'failed' ? `<span class="sub-state">${label}</span>` : ''}
+        <span class="elapsed" data-since="${since || ''}">${elapsed(since)}</span>
+      </li>`;
+    })
+    .join('');
+}
+
+/** サブエージェントの会話を表示しているときの詳細画面です（読み取り専用） */
+function renderSubDetail(a, s) {
+  const chain = [a.name, ...ancestorsOf(a.subagents, s.id).reverse().map((p) => p.description)].join(' › ');
+  $('#d-name').textContent = s.description;
+  const kind = `${s.agentType || 'サブエージェント'}・${s.background ? 'バックグラウンド' : 'フォアグラウンド'}`;
+  $('#d-meta').textContent = `サブエージェント（${kind}） · 親: ${chain} · ${s.id}`;
+  $('#d-meta').title = `親: ${chain}\nサブエージェント ID: ${s.id}`;
+  const since = s.state === 'running' || s.state === 'waiting' ? s.startedAt : s.stateSince;
+  updateCat($('#d-cat canvas'), { seed: s.id, coat: coatOf(a.id, a.coat), state: s.state, activity: s.activity, since: s.stateSince });
+  $('#d-badge').className = `badge st-${s.state}`;
+  $('#d-badge').textContent = SUB_STATE_LABEL[s.state] || s.state;
+  $('#d-act').textContent = s.activity || '';
+  $('#d-elapsed').dataset.since = since || '';
+  $('#d-elapsed').textContent = elapsed(since);
+  $('#sub-parent-name').textContent = a.name;
+  $('#chat').hidden = false;
+  $('#term').hidden = true;
+}
+
 function renderDetail() {
   const a = selected();
   $('#empty').hidden = !!a;
   $('#detail').hidden = !a;
   if (!a) return;
+  const sub = selectedSubagent();
+  // サブエージェントの表示中は、送信・キー送信・キュー・回答待ちパネルなどの操作部品を隠します
+  $('#detail').classList.toggle('sub-view', !!sub);
+  if (sub) {
+    renderSubDetail(a, sub);
+    syncQueue(null);
+    return;
+  }
   $('#d-name').textContent = a.name;
   const mode = a.currentMode ? ` · mode: ${a.currentMode}` : '';
   $('#d-meta').textContent = `${a.model}${mode} · ${a.cwd} · ${a.sessionId?.slice(0, 8) ?? ''}`;
@@ -278,7 +357,8 @@ function autoTriage(items) {
 // ---------- 回答待ちパネル ----------
 
 async function syncPending() {
-  const a = selected();
+  // サブエージェントの表示中は回答待ちパネルを出しません（回答は親エージェントの表示から行います）
+  const a = selectedSub ? null : selected();
   const sig = a ? `${a.id}:${a.pending.map((p) => p.reqId).join(',')}` : '';
   if (sig === pendingSig) return;
   pendingSig = sig;
@@ -317,17 +397,27 @@ function scheduleTranscript() {
 async function loadTranscript() {
   const a = selected();
   if (!a) return;
-  const id = a.id;
+  const key = viewKey();
+  const sub = selectedSub;
+  const url = sub ? `/api/agents/${a.id}/subagents/${encodeURIComponent(sub)}/transcript` : `/api/agents/${a.id}/transcript`;
   try {
-    const { items } = await api('GET', `/api/agents/${id}/transcript`);
-    if (id === selectedId) renderChat(items);
+    const { items } = await api('GET', url);
+    if (key === viewKey()) renderChat(items);
   } catch (e) {
+    // サブエージェントの記録が見つからなくなった場合は、親エージェントの表示に戻します
+    if (sub && e.status === 404 && key === viewKey()) {
+      toast('サブエージェントの記録が見つかりません');
+      select(a.id);
+      return;
+    }
     toast(e.message);
   }
 }
 
 function renderChat(items) {
   const el = $('#chat');
+  // サブエージェントの会話は読み取り専用なので、提案の仕分けは出しません（判断は親エージェントへ送るものであるため）
+  const readOnly = !!selectedSub;
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   if (!items.length) {
     el.innerHTML = '<div class="placeholder">まだ会話がありません。</div>';
@@ -356,7 +446,7 @@ function renderChat(items) {
     }
     flush();
     if (it.role === 'assistant') {
-      const triageable = !!parseProposals(it.text);
+      const triageable = !readOnly && !!parseProposals(it.text);
       html += `<div class="msg assistant md">${renderMarkdown(it.text)}${
         triageable ? `<div class="msg-tools"><button type="button" class="link triage-btn" data-idx="${idx}" title="項目をカードにして採用・却下・修正を仕分けます">仕分ける</button></div>` : ''
       }</div>`;
@@ -380,15 +470,15 @@ function renderChat(items) {
   el.innerHTML = html;
   for (const d of el.querySelectorAll('details[data-key]')) if (openState.has(d.dataset.key)) d.open = openState.get(d.dataset.key);
   hydrate(el);
-  autoTriage(items);
-  if (atBottom || forceScroll || el.dataset.agent !== selectedId) el.scrollTop = el.scrollHeight;
+  if (!readOnly) autoTriage(items);
+  if (atBottom || forceScroll || el.dataset.agent !== viewKey()) el.scrollTop = el.scrollHeight;
   forceScroll = false;
-  el.dataset.agent = selectedId;
+  el.dataset.agent = viewKey();
 }
 
 async function pollScreen() {
   const a = selected();
-  if (tab !== 'term' || !a || document.hidden) return;
+  if (tab !== 'term' || !a || document.hidden || selectedSub) return;
   try {
     const { text } = await api('GET', `/api/agents/${a.id}/screen`);
     if (a.id === selectedId) $('#term').textContent = text || '（表示できる画面がありません）';
@@ -397,9 +487,15 @@ async function pollScreen() {
 
 // ---------- 操作 ----------
 
+function setSelectedSub(sub) {
+  selectedSub = sub || null;
+  save('selectedSub', selectedSub);
+}
+
 function select(id) {
   if (!id) return;
   selectedId = id;
+  setSelectedSub(null);
   attention.delete(id);
   save('selectedId', id);
   renderList();
@@ -411,6 +507,20 @@ function select(id) {
   pollScreen();
   syncPending();
   if (!selected()?.pending.length) $('#input').focus();
+}
+
+/** サブエージェントを選んで、その会話を読み取り専用で表示します */
+function selectSub(id, sub) {
+  if (!id || !sub) return;
+  selectedId = id;
+  setSelectedSub(sub);
+  save('selectedId', id);
+  renderList();
+  renderDetail();
+  $('#chat').innerHTML = '';
+  closeTriage();
+  syncPending();
+  loadTranscript();
 }
 
 function setTab(t) {
@@ -477,9 +587,28 @@ function nextAttention() {
 // ---------- イベント登録 ----------
 
 $('#agent-list').addEventListener('click', (e) => {
+  // ツリーの開閉は、選択を変えずにその親エージェントの表示だけを切り替えます
+  const toggle = e.target.closest('[data-toggle-sub]');
+  if (toggle) {
+    const id = toggle.dataset.toggleSub;
+    collapsedSubs.has(id) ? collapsedSubs.delete(id) : collapsedSubs.add(id);
+    save('subCollapsed', JSON.stringify([...collapsedSubs]));
+    renderList();
+    return;
+  }
+  const more = e.target.closest('.sub-more');
+  if (more) {
+    const id = more.dataset.id;
+    expandedSubs.has(id) ? expandedSubs.delete(id) : expandedSubs.add(id);
+    renderList();
+    return;
+  }
+  const sub = e.target.closest('.sub');
+  if (sub) return selectSub(sub.dataset.id, sub.dataset.sub);
   const li = e.target.closest('.agent');
   if (li) select(li.dataset.id);
 });
+$('#btn-sub-parent').addEventListener('click', () => select(selectedId));
 for (const b of document.querySelectorAll('[data-tab]')) b.addEventListener('click', () => setTab(b.dataset.tab));
 for (const b of document.querySelectorAll('[data-key]')) b.addEventListener('click', () => sendKey(b.dataset.key));
 

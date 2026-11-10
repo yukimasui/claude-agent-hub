@@ -7,11 +7,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 import { HUB_URL, api, brief, check, cleanup, createAgent, failed, log, preflight, sleep, waitFor } from './lib.mjs';
+import { SUBAGENT_PROMPT } from './scenarios/subagent.mjs';
 
 const MODES = {
   shot: '既存のエージェントの画面を撮影します（Claude は起動しません。ID 省略時は最後に作成したエージェント）',
   question: '質問するエージェントを作り、回答待ちパネルを撮影してから画面のクリック操作で回答します',
   triage: '提案を出すエージェントを作り、仕分けボードをドラッグ＆ドロップ・キー操作・拡大表示で仕分けて送信します',
+  subagent: 'サブエージェントを起動するエージェントを作り、一覧のツリーを撮影してからサブエージェントの会話を開きます',
 };
 
 const [mode, agentArg] = process.argv.slice(2);
@@ -24,7 +26,7 @@ if (!MODES[mode]) {
   PLAYWRIGHT_CORE_PATH            playwright-core のディレクトリ（未指定なら通常のモジュール解決で探します）
   PLAYWRIGHT_CHROMIUM_EXECUTABLE  使用する Chromium の実行ファイル（未指定なら playwright の既定）
   E2E_SHOTS_DIR                   スクリーンショットの保存先（既定: OS の一時ディレクトリに作成）
-  E2E_KEEP=1                      作成したエージェントを残す（question / triage）`);
+  E2E_KEEP=1                      作成したエージェントを残す（question / triage / subagent）`);
   process.exit(mode ? 1 : 0);
 }
 
@@ -253,9 +255,46 @@ async function runTriage() {
   await captureAgent(page, 'after');
 }
 
+async function runSubagent() {
+  const a = await createAgent({ name: 'e2e-ui-subagent', coat: 'orange', prompt: SUBAGENT_PROMPT });
+  await waitFor(a.id, (x) => x.subagents?.some((s) => s.state === 'running'), '実行中のサブエージェント', 120000);
+  const page = await openPage(a.id);
+  const sidebar = page.locator('.sidebar');
+  // ほかのエージェント（E2E_KEEP=1 で残したものなど）の行を数えないよう、親エージェントの ID で絞り込みます
+  const rows = page.locator(`.sub[data-id="${a.id}"]`);
+  check((await rows.count()) > 0, '親エージェントの下にサブエージェントの行が表示される');
+  await sidebar.screenshot({ path: shot('tree-running') });
+
+  const s = await waitFor(a.id, (x) => x.state === 'done' && x.subagents?.length && x.subagents.every((y) => y.state === 'done'), 'すべての完了', 240000);
+  log(brief(s));
+  await page.waitForTimeout(2000);
+  await sidebar.screenshot({ path: shot('tree-done') });
+  check((await page.locator(`.sub.st-done[data-id="${a.id}"]`).count()) === s.subagents.length, '完了したサブエージェントが「完了」の表示になる');
+
+  // 入れ子のものがあればそれを、なければ最初のサブエージェントを開きます
+  const target = s.subagents.find((x) => x.parentId) || s.subagents[0];
+  await page.locator(`.sub[data-sub="${target.id}"]`).click();
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: shot('sub-detail') });
+  check(await page.locator('.sub-note').isVisible(), 'サブエージェントの表示では読み取り専用の案内が出る');
+  check(await page.locator('.composer').isHidden(), 'サブエージェントの表示では入力欄を隠す');
+  check((await page.locator('#d-name').textContent()) === target.description, '詳細画面の名前がサブエージェントの説明になる');
+  check((await page.locator('#chat .msg').count()) > 0, 'サブエージェントの会話が表示される');
+
+  // ツリーの折りたたみと、親エージェントの表示に戻る操作です
+  await page.locator(`.sub-chip[data-toggle-sub="${a.id}"]`).click();
+  await page.waitForTimeout(300);
+  check((await rows.count()) === 0, 'ツリーを折りたためる');
+  await page.locator(`.sub-chip[data-toggle-sub="${a.id}"]`).click();
+  await page.locator('#btn-sub-parent').click();
+  await page.waitForTimeout(800);
+  check(await page.locator('.composer').isVisible(), '親エージェントの表示に戻ると入力欄が出る');
+  await captureAgent(page, 'parent');
+}
+
 let error = null;
 try {
-  await { shot: runShot, question: runQuestion, triage: runTriage }[mode]();
+  await { shot: runShot, question: runQuestion, triage: runTriage, subagent: runSubagent }[mode]();
 } catch (e) {
   error = e;
   console.error(`  ✖ 中断しました: ${e.message}`);

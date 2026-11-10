@@ -153,6 +153,8 @@ export function moodOf({ state, activity, since }) {
   const idleFor = since ? Date.now() - Number(since) : 0;
   switch (state) {
     case 'ended':
+    // サブエージェントの「失敗」も、もう動かないことを示すため終了と同じ灰色の寝姿にします（色分けはバッジで行います）
+    case 'failed':
       return 'dead-sleep';
     case 'starting':
       return 'yawn';

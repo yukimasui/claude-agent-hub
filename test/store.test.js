@@ -247,5 +247,33 @@ test('publicAgent は対話要求の内部情報をクライアントに渡さ�
   writeRequest('r-pub', { tool_name: 'Write', tool_input: { file_path: 'x' }, input_hash: 'hh' });
   emit({ event: 'PermissionRequest', tool: 'Write', input_hash: 'hh', reqId: 'r-pub' });
   const pub = publicAgent(store.get(id));
-  assert.deepEqual(Object.keys(pub.pending[0]).sort(), ['createdAt', 'kind', 'label', 'reqId', 'tool']);
+  // subagentId は一覧でサブエージェントを「要対応」にするために渡します（hook の PID や入力のハッシュは渡しません）
+  assert.deepEqual(Object.keys(pub.pending[0]).sort(), ['createdAt', 'kind', 'label', 'reqId', 'subagentId', 'tool']);
+});
+
+test('サブエージェントからの対話要求はサブエージェントの ID を覚え、サブエージェントのイベントで transcript の場所を変えない', () => {
+  const { emit } = setup();
+  emit({ event: 'SessionStart', session_id: 's1', transcript_path: '/tmp/parent.jsonl' });
+  writeRequest('r-sub', { tool_name: 'Bash', tool_input: { command: 'date' }, input_hash: 'hs' });
+  const a = emit(
+    { event: 'SubagentStart', agent_id: 'as1', agent_type: 'general-purpose', transcript_path: '/tmp/other.jsonl' },
+    { event: 'PermissionRequest', tool: 'Bash', input_hash: 'hs', reqId: 'r-sub', agent_id: 'as1' },
+  );
+  assert.equal(a.transcriptPath, '/tmp/parent.jsonl');
+  assert.equal(a.pending[0].subagentId, 'as1');
+  assert.equal(publicAgent(a).pending[0].subagentId, 'as1');
+  assert.deepEqual(a.subagents, []);
+});
+
+test('親のプロセスの起動時刻は startup / resume の SessionStart で更新し、compact / clear では変えない', () => {
+  const { emit } = setup();
+  let a = emit({ event: 'SessionStart', source: 'startup', ts: 1000 });
+  assert.equal(a.processStartedAt, 1000);
+  a = emit({ event: 'SessionStart', source: 'compact', ts: 2000 }, { event: 'SessionStart', source: 'clear', ts: 3000 });
+  assert.equal(a.processStartedAt, 1000);
+  a = emit({ event: 'SessionStart', source: 'resume', ts: 4000 });
+  assert.equal(a.processStartedAt, 4000);
+  // サブエージェントのイベントでは変えません
+  a = emit({ event: 'SessionStart', source: 'startup', ts: 5000, agent_id: 'as1' });
+  assert.equal(a.processStartedAt, 4000);
 });

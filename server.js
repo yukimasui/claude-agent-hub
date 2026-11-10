@@ -30,6 +30,7 @@ import { buildOutput } from './lib/interactions.js';
 import { INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
 import { readTranscript, readTranscriptImage } from './lib/transcript.js';
+import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
 
 const store = new Store();
@@ -98,7 +99,7 @@ async function createAgent(body) {
   }
 
   const coat = COATS.has(body.coat) ? body.coat : '';
-  const base = { id, name, model, cwd, permissionMode, coat, sessionId: randomUUID(), createdAt: Date.now() };
+  const base = { id, name, model, cwd, permissionMode, coat, sessionId: randomUUID(), createdAt: Date.now(), processStartedAt: Date.now() };
   const prompt = String(body.prompt || '').trim();
   const { windowId, paneId } = await tmux.createWindow({
     name: name.replace(/[^\w.-]+/g, '_'),
@@ -111,13 +112,14 @@ async function createAgent(body) {
 
 async function restartAgent(a) {
   // 会話が始まっていれば resume、まだなら新しいセッションで起動するにゃ
+  // processStartedAt は、前のプロセスで止まったサブエージェントを「中断」と判定するために更新します（SessionStart が届けば上書きされます）
   const resume = !!(a.transcriptPath && fs.existsSync(a.transcriptPath));
   if (!resume) a.sessionId = randomUUID();
   const command = buildCommand(a, { resume });
   const panes = await tmux.listPanes();
   if (a.paneId && panes.has(a.paneId)) {
     await tmux.respawnPane({ paneId: a.paneId, cwd: a.cwd, env: agentEnv(a), command });
-    store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity: '再起動しています…', alive: true, stateSince: Date.now() });
+    store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity: '再起動しています…', alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
   } else {
     const { windowId, paneId } = await tmux.createWindow({
       name: a.name.replace(/[^\w.-]+/g, '_'),
@@ -125,7 +127,7 @@ async function restartAgent(a) {
       env: agentEnv(a),
       command,
     });
-    store.patch(a.id, { windowId, paneId, sessionId: a.sessionId, state: 'starting', activity: '再起動しています…', alive: true, stateSince: Date.now() });
+    store.patch(a.id, { windowId, paneId, sessionId: a.sessionId, state: 'starting', activity: '再起動しています…', alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
   }
 }
 
@@ -143,6 +145,34 @@ store.on('change', (id) => {
   if (!a || !a.windowId || tmuxState.get(id) === a.state) return;
   tmuxState.set(id, a.state);
   tmux.setWindowState(a.windowId, a.state).catch(() => {});
+});
+
+// ---------- サブエージェント ----------
+
+// サブエージェントの一覧は記録ファイルから組み立て、内容が変わったときだけエージェントの情報を更新して画面に配信します。
+// 状態が変わるたび（サブエージェント内のツール呼び出しも hook のイベントとして届きます）と、
+// イベントが届かない変化（親のプロセスの終了など）に備えた定期的な確認のときに組み立て直します。
+const subagentSig = new Map();
+const refreshingSubagents = new Set();
+function refreshSubagents(id) {
+  const a = store.get(id);
+  if (!a || refreshingSubagents.has(id)) return;
+  refreshingSubagents.add(id);
+  try {
+    const subagents = listSubagents(a);
+    const sig = JSON.stringify(subagents);
+    if (sig === subagentSig.get(id)) return;
+    subagentSig.set(id, sig);
+    store.patch(id, { subagents });
+  } catch (e) {
+    console.error(e);
+  } finally {
+    refreshingSubagents.delete(id);
+  }
+}
+store.on('change', (id) => {
+  if (!store.get(id)) subagentSig.delete(id);
+  else refreshSubagents(id);
 });
 
 // ---------- 対話要求 ----------
@@ -341,6 +371,17 @@ async function api(req, res, url) {
     return sendImage(res, img);
   }
 
+  // サブエージェントの会話（読み取り専用）です。読めるのはそのエージェントのセッションの subagents/ にある記録だけです
+  const sm = url.pathname.match(/^\/api\/agents\/([\w-]+)\/subagents\/([\w-]{1,64})\/transcript$/);
+  if (sm) {
+    if (req.method !== 'GET') throw httpError(405, 'Method not allowed');
+    const a = store.get(sm[1]);
+    if (!a) throw httpError(404, 'エージェントが見つかりません');
+    const items = readSubagentTranscript(a, sm[2], Number(url.searchParams.get('limit')) || 300);
+    if (!items) throw httpError(404, 'サブエージェントが見つかりません');
+    return send(res, 200, { items });
+  }
+
   const m = url.pathname.match(/^\/api\/agents(?:\/([\w-]+)(?:\/(\w+))?)?$/);
 
   if (url.pathname === '/api/stream') {
@@ -457,6 +498,11 @@ fs.watch(EVENTS_DIR, (_type, fname) => {
 // fs.watch の取りこぼし対策の保険にゃ
 setInterval(() => store.list().forEach((a) => store.ingest(a.id)), 1500);
 setInterval(() => reconcile().catch(() => {}), 2000);
+// プロセスが終了したエージェントのサブエージェントは記録が増えないため、完了通知を読み終えていれば定期的な確認を省きます
+// （親の状態が変わったときは 'change' で組み立て直します）
+setInterval(() => {
+  for (const a of store.list()) if (a.alive || !notificationsCaughtUp(a.transcriptPath)) refreshSubagents(a.id);
+}, 3000);
 
 // 終了時は待機中の hook をすべて解放して TUI に任せるにゃ
 function shutdown() {

@@ -397,3 +397,12 @@ test('detectImageType は先頭のバイト列から対応する形式だけを�
   assert.equal(detectImageType(Buffer.from('<html>')), null);
   assert.equal(detectImageType(Buffer.alloc(0)), null);
 });
+
+test('sidechain を指定すると、サブエージェントの transcript（isSidechain の行）だけを読む', () => {
+  const side = (o) => ({ ...o, isSidechain: true });
+  const file = write([user('親の発言'), side(user('サブエージェントへの依頼')), side(assistant([{ type: 'text', text: '報告' }]))]);
+  assert.deepEqual(readTranscript(file).map((i) => i.text), ['親の発言']);
+  assert.deepEqual(readTranscript(file, 300, { sidechain: true }).map((i) => i.text), ['サブエージェントへの依頼', '報告']);
+  // 読み方ごとに別のキャッシュを使うので、続けて通常の読み方をしても結果が混ざりません
+  assert.deepEqual(readTranscript(file).map((i) => i.text), ['親の発言']);
+});
