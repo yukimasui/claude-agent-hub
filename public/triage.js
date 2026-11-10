@@ -12,11 +12,21 @@ export const DECISIONS = [
 
 // ---------- 提案の抽出 ----------
 
-/** ```proposals ブロックを探して {title, items} を返すにゃ */
+/**
+ * ```proposals ブロックを探して {title, items} を返します（項目を取り出せなければ null）。
+ * 書き損じたブロックの後に書き直したブロックが続く応答もあるため、項目を取り出せる最初のブロックを使います。
+ * サーバもキューを一時停止するかどうかをこの関数で判定するため、DOM や Node 専用の API は使いません。
+ */
 export function parseProposals(text) {
-  const m = String(text || '').match(/```proposals[^\n]*\n([\s\S]*?)```/);
-  if (!m) return null;
-  const body = m[1].trim();
+  for (const m of String(text || '').matchAll(/```proposals[^\n]*\n([\s\S]*?)```/g)) {
+    const p = parseBlock(m[1].trim());
+    if (p) return p;
+  }
+  return null;
+}
+
+/** ブロックの中身を JSON として、読めなければ箇条書きとして解釈します */
+function parseBlock(body) {
   try {
     const j = JSON.parse(body);
     const raw = Array.isArray(j) ? j : j.items;
@@ -33,6 +43,20 @@ export function parseProposals(text) {
   }
   const items = extractListItems(body);
   return items.length ? { title: '提案', items } : null;
+}
+
+/**
+ * 会話の項目（readTranscript の結果）から、まだ返答していない提案を含む応答を探して返します（無ければ null）。
+ * 最後の利用者の発言より後にある応答を新しい順に見て、parseProposals で項目を取り出せる最初の応答を選びます。
+ * 画面の仕分けボードの自動表示と、サーバのキューの一時停止の両方がこの関数を使い、判定の基準をそろえています。
+ */
+export function findOpenProposals(items) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i];
+    if (it.role === 'user') return null;
+    if (it.role === 'assistant' && parseProposals(it.text)) return it;
+  }
+  return null;
 }
 
 /** 本文のトップレベルの箇条書き・番号付きリストを項目として取り出すにゃ */

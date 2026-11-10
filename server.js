@@ -266,7 +266,8 @@ store.on('change', (id) => {
 async function dispatchNext(id, { force = false } = {}) {
   const a = store.get(id);
   if (!readyForNext(a) || (a.queuePaused && !force)) return;
-  if (!force && hasOpenProposals(readTranscript(a.transcriptPath, 40))) {
+  // 画面（/api/agents/:id/transcript の既定）と同じ件数を読み、仕分けボードの自動表示と同じ範囲で判定します
+  if (!force && hasOpenProposals(readTranscript(a.transcriptPath))) {
     store.patch(id, { queuePaused: true, queueNote: '判断待ちの提案があるため一時停止しました' });
     return;
   }

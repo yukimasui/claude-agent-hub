@@ -3,7 +3,7 @@ import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
 import { catCanvas, mountCats, updateCat } from './cats.js';
 import { renderQueue } from './queue.js';
-import { isDone, openBoard, parseProposals } from './triage.js';
+import { findOpenProposals, isDone, openBoard, parseProposals } from './triage.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -273,11 +273,9 @@ function openTriageFor(it, auto) {
 
 /** 最後の応答に未回答の proposals ブロックがあれば自動で開くにゃ */
 function autoTriage(items) {
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it.role === 'user') return;
-    if (it.role === 'assistant' && parseProposals(it.text)) return openTriageFor(it, true);
-  }
+  // サーバがキューを一時停止する判定（lib/queue.js の hasOpenProposals）と同じ関数を使います
+  const it = findOpenProposals(items);
+  if (it) openTriageFor(it, true);
 }
 
 // ---------- 回答待ちパネル ----------

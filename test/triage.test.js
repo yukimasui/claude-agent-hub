@@ -2,7 +2,7 @@
 // （localStorage や描画を扱う関数は対象外です）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { composeReply, extractListItems, parseProposals } from '../public/triage.js';
+import { composeReply, extractListItems, findOpenProposals, parseProposals } from '../public/triage.js';
 
 const block = (body) => `前置きの説明\n\`\`\`proposals\n${body}\n\`\`\`\n後書き`;
 
@@ -36,6 +36,27 @@ test('ブロックが無い、または項目が無ければ null を返す', ()
   assert.equal(parseProposals('提案はありません'), null);
   assert.equal(parseProposals(block('{"items":[]}')), null);
   assert.equal(parseProposals(null), null);
+});
+
+test('閉じの無いブロックは提案として扱わない', () => {
+  assert.equal(parseProposals('前置き\n```proposals\n{"items":[{"title":"A"}]}'), null);
+});
+
+test('複数のブロックがあれば、項目を取り出せる最初のブロックを使う', () => {
+  // 書き損じたブロックの後に書き直したブロックが続く応答でも、仕分けボードを出せるようにします
+  const text = `${block('{"items":[]}')}\n${block('{"title":"訂正版","items":[{"title":"A"}]}')}\n${block('[{"title":"B"}]')}`;
+  assert.deepEqual(parseProposals(text), { title: '訂正版', items: [{ id: '1', title: 'A', detail: '' }] });
+});
+
+test('findOpenProposals は最後の利用者の発言より後で、項目を取り出せる最も新しい応答を返す', () => {
+  const older = { role: 'assistant', text: block('[{"title":"古い"}]') };
+  const newer = { role: 'assistant', text: block('[{"title":"新しい"}]') };
+  const empty = { role: 'assistant', text: block('{"items":[]}') };
+  const tool = { role: 'tool', name: 'Read', text: block('[{"title":"ツール"}]') };
+  assert.equal(findOpenProposals([{ role: 'user', text: '調べて' }, older, newer, empty, tool]), newer);
+  assert.equal(findOpenProposals([older, { role: 'user', text: '古い案で' }, empty]), null);
+  assert.equal(findOpenProposals([{ role: 'user', text: '調べて' }, empty]), null);
+  assert.equal(findOpenProposals([]), null);
 });
 
 test('ブロックの外にある箇条書きは提案として扱わない', () => {

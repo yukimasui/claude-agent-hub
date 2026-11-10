@@ -175,7 +175,29 @@ test('利用者が返答した後の提案や、proposals ブロックのない�
   assert.equal(hasOpenProposals([]), false);
 });
 
-test('判定は ```proposals の有無だけを見て、ブロックの中身は解析しない', () => {
-  // 画面側（public/triage.js の parseProposals）は項目が取れたときだけ提案として扱うため、ここでの判定とは一致しない場合があります
-  assert.equal(hasOpenProposals([{ role: 'assistant', text: '```proposals\n```' }]), true);
+test('仕分けボードに出せる項目が無いブロックは判断待ちとみなさない', () => {
+  // 画面（public/triage.js の parseProposals）と同じ基準で判定し、ボードが出ないのにキューだけが止まることを防ぎます
+  const open = (text) => hasOpenProposals([{ role: 'user', text: '調べて' }, { role: 'assistant', text }]);
+  assert.equal(open('```proposals\n```'), false);
+  assert.equal(open('```proposals\n{"items":[]}\n```'), false);
+  assert.equal(open('```proposals\n{"items":[{"title":""}]}\n```'), false);
+  // 閉じの無いブロックは、画面でも提案として扱いません
+  assert.equal(open('```proposals\n{"items":[{"title":"A 案"}]}'), false);
+});
+
+test('項目を取り出せない応答の前に提案があれば、その提案を判断待ちとみなす', () => {
+  // 画面の自動表示（最後の利用者の発言より後の応答を新しい順に見る）と同じく、取り出せる最初の応答を探します
+  assert.equal(
+    hasOpenProposals([
+      { role: 'user', text: '調べて' },
+      { role: 'assistant', text: proposals },
+      { role: 'assistant', text: '```proposals\n{"items":[]}\n```' },
+    ]),
+    true,
+  );
+});
+
+test('1 つの応答で壊れたブロックの後に正しいブロックがあれば判断待ちとみなす', () => {
+  const text = '```proposals\n{"items":[]}\n```\n訂正します。\n```proposals\n{"items":[{"title":"A 案"}]}\n```';
+  assert.equal(hasOpenProposals([{ role: 'user', text: '調べて' }, { role: 'assistant', text }]), true);
 });
