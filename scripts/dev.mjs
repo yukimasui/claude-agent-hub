@@ -107,5 +107,22 @@ function main() {
   child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
 }
 
+/**
+ * このファイルが直接実行されたかを判定します。
+ * シンボリックリンクを含むパスで実行すると process.argv[1] と import.meta.url のパスが一致しないため、
+ * 両方を実体のパスに直して比べます（一致しないと何もせずに終了コード 0 で終わってしまうため）。
+ */
+export function isDirectRun(argvPath, moduleUrl) {
+  if (!argvPath) return false;
+  const real = (p) => {
+    try {
+      return fs.realpathSync(p);
+    } catch {
+      return path.resolve(p);
+    }
+  };
+  return real(argvPath) === real(fileURLToPath(moduleUrl));
+}
+
 // テストから判定処理だけを読み込めるよう、直接実行されたときだけ起動します
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main();
+if (isDirectRun(process.argv[1], import.meta.url)) main();

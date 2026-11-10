@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { resolveDevEnv } from '../scripts/dev.mjs';
+import { isDirectRun, isLaunchedFrom, resolveDevEnv } from '../scripts/dev.mjs';
+import { pathToFileURL } from 'node:url';
 
 const AGENT = 'a1234567';
 
@@ -109,4 +110,34 @@ test('開発用のハブが起動したエージェントの中で本番のデ�
   const prod = path.join(h, '.agent-hub');
   const { problems } = resolveDevEnv({ AGENT_HUB_AGENT: AGENT, AGENT_HUB_HOME: prod }, { homedir: h });
   assert.deepEqual(problems, [`AGENT_HUB_HOME が本番と同じ ${prod} です`]);
+});
+
+test('isLaunchedFrom は agents.json が壊れている・配列でない場合に、親のデータ置き場とみなさない', (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-dev-test-'));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  assert.equal(isLaunchedFrom(home, AGENT), false, 'agents.json がない');
+  fs.writeFileSync(path.join(home, 'agents.json'), '{ broken');
+  assert.equal(isLaunchedFrom(home, AGENT), false, 'JSON として読めない');
+  fs.writeFileSync(path.join(home, 'agents.json'), JSON.stringify({ id: AGENT }));
+  assert.equal(isLaunchedFrom(home, AGENT), false, '配列でない');
+  fs.writeFileSync(path.join(home, 'agents.json'), JSON.stringify([null, 1, { id: 'other' }]));
+  assert.equal(isLaunchedFrom(home, AGENT), false, '要素が想定外の形');
+  assert.equal(isLaunchedFrom('', AGENT), false, 'データ置き場が空');
+  assert.equal(isLaunchedFrom(home, ''), false, 'エージェント ID が空');
+});
+
+test('isDirectRun はシンボリックリンクを含むパスで実行した場合も、直接実行と判定する', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-dev-test-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const real = path.join(dir, 'real');
+  fs.mkdirSync(real);
+  const file = path.join(real, 'dev.mjs');
+  fs.writeFileSync(file, '');
+  const link = path.join(dir, 'link');
+  fs.symlinkSync(real, link, 'dir');
+  const url = pathToFileURL(file).href;
+  assert.equal(isDirectRun(file, url), true, '実体のパス');
+  assert.equal(isDirectRun(path.join(link, 'dev.mjs'), url), true, 'リンクを含むパス');
+  assert.equal(isDirectRun(path.join(dir, 'other.mjs'), url), false, '別のファイル');
+  assert.equal(isDirectRun(undefined, url), false, '引数なし（import された場合など）');
 });
