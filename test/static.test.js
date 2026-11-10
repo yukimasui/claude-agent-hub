@@ -7,6 +7,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import { Readable } from 'node:stream';
 import { isNotModified, serveStatic, staticEtag } from '../lib/http.js';
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-static-'));
@@ -25,6 +26,8 @@ before(async () => {
   port = server.address().port;
 });
 after(() => {
+  // 応答が終わらない接続が残っていても、テストが終われるよう閉じます（不具合が再発したときに止まったままにしないため）
+  server.closeAllConnections();
   server.close();
   fs.rmSync(root, { recursive: true, force: true });
 });
@@ -84,6 +87,100 @@ test('存在しないファイル・ディレクトリ・publicDir の外は 404
   assert.equal((await get('/sub')).status, 404);
   assert.equal((await get('/..%2Fsecret.txt')).status, 404);
   assert.equal((await get('/%2E%2E/secret.txt')).status, 404);
+});
+
+test('publicDir の外を指す正規化されていないパスは 404 を返す', () => {
+  // HTTP 経由では new URL がパスの .. を先に解決してしまい、前方一致の確認まで届かないため、serveStatic を直接呼んで確かめます
+  for (const pathname of ['/../secret.txt', '/sub/../../secret.txt', `/../${path.basename(publicDir)}x/secret.txt`]) {
+    const res = fakeResponse();
+    serveStatic({ headers: {} }, res, publicDir, pathname);
+    assert.equal(res.status, 404, pathname);
+    assert.equal(res.body, 'Not found', pathname);
+  }
+});
+
+/** serveStatic の書き出しを記録するだけの応答オブジェクトです */
+function fakeResponse() {
+  return {
+    status: null,
+    body: '',
+    writeHead(status) {
+      this.status = status;
+      return this;
+    },
+    end(body = '') {
+      this.body += body;
+      return this;
+    },
+  };
+}
+
+/**
+ * 応答の途中で接続が切れても reject せず、どこまで受け取れたかを返す GET です。
+ * 読み込みに失敗したときのサーバの振る舞い（エラーの応答を返すか、接続を閉じるか）を確かめるために使います。
+ */
+function getSettled(pathname) {
+  return new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, path: pathname }, (res) => {
+      const chunks = [];
+      res.on('data', (c) => chunks.push(c));
+      res.on('error', (error) => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8'), complete: false, error }));
+      res.on('end', () => resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8'), complete: res.complete }));
+    });
+    req.on('error', (error) => resolve({ status: null, error }));
+    req.end();
+  });
+}
+
+test('ファイルを開けないときは、サーバを落とさずにエラーの応答を返す', { timeout: 5000, skip: process.getuid?.() === 0 && 'root は読み取り権限のないファイルも開けるため' }, async () => {
+  // 情報は取得できても開けないファイルで、情報の取得と読み込みの間にファイルが消されたり権限が変わったりした場合を再現します
+  const file = path.join(publicDir, 'locked.js');
+  fs.writeFileSync(file, 'locked');
+  fs.chmodSync(file, 0o000);
+  try {
+    const r = await getSettled('/locked.js');
+    assert.equal(r.status, 500);
+    assert.equal(r.complete, true);
+    assert.ok(!r.body.includes('locked'));
+  } finally {
+    fs.chmodSync(file, 0o644);
+  }
+  // サーバは動き続けています
+  assert.equal((await get('/app.js')).status, 200);
+});
+
+test('情報の取得から開くまでの間にファイルが消されたときは、404 を返す', { timeout: 5000 }, async (t) => {
+  // 情報の取得と開く処理の間の競合は実ファイルでは狙って起こせないため、開く段階で ENOENT になるストリームに差し替えて再現します
+  const fake = t.mock.method(fs, 'createReadStream', () => {
+    const s = new Readable({ read() {} });
+    setImmediate(() => s.destroy(Object.assign(new Error('ファイルがありません'), { code: 'ENOENT' })));
+    return s;
+  });
+  const r = await getSettled('/app.js');
+  assert.equal(r.status, 404);
+  assert.equal(r.complete, true);
+  fake.mock.restore();
+  assert.equal((await get('/app.js')).status, 200);
+});
+
+test('読み込みの途中で失敗したときは、サーバを落とさずに接続を閉じる', { timeout: 5000 }, async (t) => {
+  // 開いた後の読み込みの失敗（I/O エラーなど）は実ファイルでは起こしにくいため、読み込みストリームを差し替えて再現します
+  const fake = t.mock.method(fs, 'createReadStream', () => {
+    const s = new Readable({ read() {} });
+    setImmediate(() => {
+      s.emit('open');
+      s.push('part');
+      setImmediate(() => s.destroy(Object.assign(new Error('読み込みに失敗しました'), { code: 'EIO' })));
+    });
+    return s;
+  });
+  const r = await getSettled('/app.js');
+  // ヘッダは送った後なので、途中で切れたことがクライアントに分かるよう、正常な終わり方をさせずに接続を閉じます
+  assert.equal(r.status, 200);
+  assert.equal(r.complete, false);
+  assert.equal(fake.mock.callCount(), 1);
+  fake.mock.restore();
+  assert.equal((await get('/app.js')).status, 200);
 });
 
 test('staticEtag はサイズと更新時刻のどちらが変わっても別の値になる', () => {
