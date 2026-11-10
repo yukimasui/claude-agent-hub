@@ -349,6 +349,12 @@ canvas.cat { image-rendering: pixelated; image-rendering: crisp-edges; display: 
 .queue-item.dragging { opacity: 0.4; }
 .queue-item .grip { cursor: grab; color: var(--muted); user-select: none; letter-spacing: -2px; }
 .qi-num { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+/* 提案への判断の項目は、先頭から外すと一時停止の原因になるため、左端の線と目印で通常の項目と見分けられるようにします */
+.queue-item.reply { border-left: 3px solid var(--accent); }
+.queue-item.stale { border-left-color: var(--running); }
+.qi-main { min-width: 0; }
+.qi-mark { display: inline-block; margin-bottom: 2px; padding: 0 6px; border-radius: 4px; font-size: 11px; cursor: help; color: var(--accent); border: 1px solid color-mix(in srgb, var(--accent) 50%, transparent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.queue-item.stale .qi-mark { color: var(--running); border-color: color-mix(in srgb, var(--running) 50%, transparent); background: color-mix(in srgb, var(--running) 12%, transparent); }
 .qi-text { white-space: pre-wrap; word-break: break-word; max-height: 4.6em; overflow: hidden; cursor: text; }
 .qi-text textarea { width: 100%; background: var(--panel); border: 1px solid var(--accent); border-radius: 6px; padding: 4px 6px; resize: vertical; }
 .qi-clear { font-size: 11px; color: var(--muted); margin: 0; }

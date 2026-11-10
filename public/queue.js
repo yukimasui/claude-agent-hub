@@ -3,10 +3,38 @@
 import { esc } from './md.js';
 
 /**
+ * キューの項目が仕分けボードからの提案への判断（reply の印付き）であれば、項目に付ける目印を返します（判断でなければ null）。
+ * openKey は判断待ちの提案の proposalKey で、判断待ちの提案がなければ null、会話をまだ読み込んでいないなどで分からないときは undefined を渡します。
+ * 対象の提案がもう判断待ちでない判断は stale にします。基準はサーバが先頭の判断を送る前に照合する処理（lib/queue.js の proposalPauseNote）と同じで、
+ * 順番が来ると送らずに一時停止する項目を、並べ替えや削除の前に見分けられるようにするためです。
+ * 分からないときや、対象の記録がない判断（記録を始める前に入ったものや「再開」で送ると決めたもの）は、照合されずに送られるので stale にしません。
+ * テストできるよう DOM には触れません。
+ * @returns {{ stale: boolean, label: string, title: string } | null}
+ */
+export function replyMark(item, openKey) {
+  if (!item?.reply) return null;
+  if (item.proposal && openKey !== undefined && openKey !== item.proposal) {
+    const why = openKey ? '判断をキューに入れた後に新しい提案が出ています' : '対象の提案にはすでに返答があります';
+    return {
+      stale: true,
+      label: '古い判断',
+      title: `提案への判断ですが、対象の提案はもう判断待ちではありません（${why}）。順番が来ると、別の提案への返答として送られないよう、送らずにキューを一時停止します。不要であれば削除してください。`,
+    };
+  }
+  return {
+    stale: false,
+    label: '提案への判断',
+    title:
+      '仕分けボードで作成した提案への判断です。キューの先頭にある間は、判断待ちの提案があっても一時停止せずに送信します。ほかの項目をこの判断より前に移すと、提案への返答より先に無関係な指示が届かないよう、キューが一時停止することがあります。',
+  };
+}
+
+/**
  * root にキューを描画するにゃ。
  * op(body) はサーバの queue 操作を呼ぶ関数（Promise）にゃ
+ * openKey は判断待ちの提案の proposalKey です（replyMark を参照してください）
  */
-export function renderQueue(root, agent, op) {
+export function renderQueue(root, agent, op, openKey) {
   const q = agent.queue || [];
   if (!q.length) {
     root.hidden = true;
@@ -27,18 +55,20 @@ export function renderQueue(root, agent, op) {
     </header>
     <ol class="queue-list">
       ${q
-        .map(
-          (it, i) => `<li class="queue-item" draggable="true" data-id="${esc(it.id)}">
+        .map((it, i) => {
+          const mark = replyMark(it, openKey);
+          // 目印は本文（.qi-text）の外に置きます。本文は編集の開始・終了で中身を差し替えるため、中に置くと目印が消えるためです
+          return `<li class="queue-item${mark ? (mark.stale ? ' reply stale' : ' reply') : ''}" draggable="true" data-id="${esc(it.id)}">
           <span class="grip" title="ドラッグで並べ替え">⋮⋮</span>
           <span class="qi-num">${i + 1}</span>
-          <div class="qi-text" title="ダブルクリックで編集">${esc(it.text)}</div>
+          <div class="qi-main">${mark ? `<span class="qi-mark" title="${esc(mark.title)}">${esc(mark.label)}</span>` : ''}<div class="qi-text" title="ダブルクリックで編集">${esc(it.text)}</div></div>
           <label class="inline-check qi-clear" title="送信前に /clear で会話をリセットします"><input type="checkbox" data-op="toggleClear" ${it.clearFirst ? 'checked' : ''}> /clear</label>
           <button type="button" class="icon" data-op="up" title="上へ" ${i === 0 ? 'disabled' : ''}>↑</button>
           <button type="button" class="icon" data-op="down" title="下へ" ${i === q.length - 1 ? 'disabled' : ''}>↓</button>
           <button type="button" class="icon" data-op="edit" title="編集">✎</button>
           <button type="button" class="icon danger" data-op="remove" title="削除">✕</button>
-        </li>`,
-        )
+        </li>`;
+        })
         .join('')}
     </ol>`;
 

@@ -277,10 +277,15 @@ function renderDetail() {
 // ---------- キュー ----------
 
 let queueSig = '';
+// 判断待ちの提案の proposalKey（なければ null）と、それを調べた会話のエージェント ID です。
+// キューの判断の項目に「古い判断」の目印を付けるために使います。エージェントを切り替えた直後は前のエージェントの値なので使いません
+let openProposal = { agentId: null, key: null };
 function syncQueue(a) {
   const root = $('#queue');
   const busy = a && ['running', 'waiting', 'compacting'].includes(a.state);
-  const sig = a ? JSON.stringify([a.id, a.queue, a.queuePaused, a.queueNote, busy]) : '';
+  const openKey = a && openProposal.agentId === a.id ? openProposal.key : undefined;
+  // JSON.stringify は undefined を null に変えるため、「分からない」（undefined）と「判断待ちの提案がない」（null）を別の値にして、両者の変化で描き直します
+  const sig = a ? JSON.stringify([a.id, a.queue, a.queuePaused, a.queueNote, busy, openKey === undefined ? '?' : openKey]) : '';
   if (sig === queueSig) return;
   // 編集中は描き直さないにゃ（次の更新で反映するにゃ）
   if (root.querySelector('textarea:focus') || root.querySelector('.queue-item.dragging')) return;
@@ -298,7 +303,7 @@ function syncQueue(a) {
       queueSig = '';
       syncQueue(selected());
     }
-  });
+  }, openKey);
 }
 
 // ---------- 提案の仕分け ----------
@@ -402,7 +407,15 @@ async function loadTranscript() {
   const url = sub ? `/api/agents/${a.id}/subagents/${encodeURIComponent(sub)}/transcript` : `/api/agents/${a.id}/transcript`;
   try {
     const { items } = await api('GET', url);
-    if (key === viewKey()) renderChat(items);
+    if (key !== viewKey()) return;
+    renderChat(items);
+    // サブエージェントの会話は提案の判定の対象ではなく、表示中はキューも隠すため、親エージェントの会話のときだけ調べます。
+    // サーバがキューを一時停止する判定（lib/queue.js の proposalPauseNote）と同じ関数で、判断待ちの提案を調べます
+    if (sub) return;
+    const open = findOpenProposals(items);
+    openProposal = { agentId: a.id, key: open ? proposalKey(open) : null };
+    // 会話の取得中に一覧が更新されている場合があるため、取得前の a ではなく最新のエージェントで描き直します
+    syncQueue(selected());
   } catch (e) {
     // サブエージェントの記録が見つからなくなった場合は、親エージェントの表示に戻します
     if (sub && e.status === 404 && key === viewKey()) {

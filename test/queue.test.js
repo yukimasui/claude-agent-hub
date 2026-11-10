@@ -1,4 +1,5 @@
 // lib/queue.js のテストです。送信ガード、キュー操作の受け付け、判断待ちの提案の判定を確かめます。
+// あわせて、キューの画面で判断の項目に付ける目印（public/queue.js の replyMark）が、サーバの判定とそろっていることを確かめます。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -6,7 +7,8 @@ import {
   STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE,
   applyQueueOp, hasOpenProposals, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
-import { proposalKey } from '../public/triage.js';
+import { proposalKey, findOpenProposals } from '../public/triage.js';
+import { replyMark } from '../public/queue.js';
 
 /** 送信してよい状態のエージェントを基本に、指定したフィールドだけを変えたものを作ります */
 const agent = (fields = {}) => ({ alive: true, pending: [], state: 'idle', queue: [], queuePaused: false, queueNote: '', ...fields });
@@ -340,4 +342,57 @@ test('古い判断による一時停止中に新しい判断を入れると、�
   // 新しい判断を送った後、古い判断は対象の提案に返答済みになるので、順番が来たときに改めて止まります
   const after = { ...a, ...r.fields, queue: r.fields.queue.slice(1) };
   assert.equal(proposalPauseNote(after, [...items, { role: 'user', text: '新しい判断', ts: 't4' }]), STALE_REPLY_ANSWERED_NOTE);
+});
+
+// ---------- キューの画面の目印（public/queue.js の replyMark） ----------
+
+/** 画面（public/app.js）と同じく、会話の項目から判断待ちの提案の識別子を求めます */
+const openKeyOf = (items) => {
+  const open = findOpenProposals(items);
+  return open ? proposalKey(open) : null;
+};
+
+test('キューの画面では、提案への判断の項目にだけ目印を付ける', () => {
+  assert.equal(replyMark(item('x1'), openKey), null);
+  const mark = replyMark(item('r1', '判断', { reply: true, proposal: openKey }), openKey);
+  assert.equal(mark.stale, false);
+  assert.equal(mark.label, '提案への判断');
+  // 先頭から外すと一時停止することがある点を、ツールチップで伝えます
+  assert.match(mark.title, /先頭にある間は/);
+  assert.match(mark.title, /一時停止/);
+});
+
+test('キューの画面の「古い判断」の目印は、サーバが先頭の判断を送らずに止める判定と一致する', () => {
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  const cases = {
+    判断待ち: openItems,
+    新しい提案: [...openItems, newer],
+    返答済み: [...openItems, { role: 'user', text: 'A 案で進めて', ts: 't3' }, { role: 'assistant', text: '進めました。', ts: 't4' }],
+  };
+  for (const [name, items] of Object.entries(cases)) {
+    for (const head of [item('r1', '判断', { reply: true, proposal: openKey }), item('r1', '判断', { reply: true })]) {
+      const note = proposalPauseNote(agent({ queue: [head] }), items);
+      const mark = replyMark(head, openKeyOf(items));
+      assert.equal(mark.stale, note === STALE_REPLY_NEW_PROPOSAL_NOTE || note === STALE_REPLY_ANSWERED_NOTE, `${name} ${head.proposal ?? '記録なし'}`);
+    }
+  }
+  // 古くなった理由（新しい提案が出たのか、返答済みなのか）もツールチップで見分けられるようにします
+  const head = item('r1', '判断', { reply: true, proposal: openKey });
+  assert.match(replyMark(head, openKeyOf(cases.新しい提案)).title, /新しい提案が出ています/);
+  assert.match(replyMark(head, openKeyOf(cases.返答済み)).title, /すでに返答があります/);
+  assert.equal(replyMark(head, null).label, '古い判断');
+});
+
+test('判断待ちの提案がまだ分からないときは、判断を古いとみなさない', () => {
+  // エージェントを切り替えた直後など、会話を読み込む前に誤って「古い判断」と表示しないためです
+  const mark = replyMark(item('r1', '判断', { reply: true, proposal: openKey }), undefined);
+  assert.equal(mark.stale, false);
+});
+
+test('先頭以外にある判断にも、対象の提案に応じた目印を付ける', () => {
+  // 古い判断が後ろに残っている場合（新しい判断が前に入った場合など）も、並べ替えや削除の前に見分けられるようにします
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  const queue = [item('r2', '新しい判断', { reply: true, proposal: proposalKey(newer) }), item('r1', '古い判断', { reply: true, proposal: openKey })];
+  const key = openKeyOf([...openItems, newer]);
+  assert.deepEqual(queue.map((x) => replyMark(x, key).stale), [false, true]);
 });
