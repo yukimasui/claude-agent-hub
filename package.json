@@ -5,7 +5,11 @@
   "description": "tmux 上で複数の Claude Code セッションを起動・監視・操作するローカルハブ",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node scripts/dev.mjs",
+    "test": "node --test test/*.test.js",
+    "e2e": "node scripts/e2e/run.mjs",
+    "e2e:ui": "node scripts/e2e/ui.mjs"
   },
   "engines": {
     "node": ">=20"
