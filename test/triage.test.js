@@ -38,6 +38,11 @@ test('ブロックが無い、または項目が無ければ null を返す', ()
   assert.equal(parseProposals(null), null);
 });
 
+test('ブロックの外にある箇条書きは提案として扱わない', () => {
+  // 情報提供のための箇条書きを判断項目にしないため、仕分けはブロックがある応答だけを対象にする
+  assert.equal(parseProposals('方法は次のとおりです。\n- FTP で送る\n- 共有フォルダを使う\n1. 申請する\n2. 手入力する'), null);
+});
+
 test('extractListItems はトップレベルの項目を取り出し、字下げした行を補足にまとめる', () => {
   const text = '説明\n1. 一つ目\n   補足\n   - 詳細\n2) 二つ目\n```\n- コード内は対象外\n```\n- 箇条\n* 箇条2\n';
   assert.deepEqual(extractListItems(text), [

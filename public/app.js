@@ -3,7 +3,7 @@ import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
 import { catCanvas, mountCats, updateCat } from './cats.js';
 import { renderQueue } from './queue.js';
-import { extractListItems, isDone, openBoard, parseProposals } from './triage.js';
+import { isDone, openBoard, parseProposals } from './triage.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -241,8 +241,9 @@ function closeTriage() {
 
 function openTriageFor(it, auto) {
   if (!it || it.role !== 'assistant') return;
-  const p = parseProposals(it.text) || { title: '提案の仕分け', items: extractListItems(it.text) };
-  if (!p.items.length) return;
+  // 判断を求める応答には proposals ブロックを付けるようシステムプロンプトで指示しているため、ブロックの無い箇条書きは対象にしません
+  const p = parseProposals(it.text);
+  if (!p) return;
   const key = `${selectedId}|${it.ts}|${hashText(it.text)}`;
   if (auto && (isDone(key) || dismissedTriage.has(key))) return;
   if (triageKey === key && !$('#triage').hidden) return;
@@ -358,7 +359,7 @@ function renderChat(items) {
     }
     flush();
     if (it.role === 'assistant') {
-      const triageable = parseProposals(it.text) || extractListItems(it.text).length >= 2;
+      const triageable = !!parseProposals(it.text);
       html += `<div class="msg assistant md">${renderMarkdown(it.text)}${
         triageable ? `<div class="msg-tools"><button type="button" class="link triage-btn" data-idx="${idx}" title="項目をカードにして採用・却下・修正を仕分けます">仕分ける</button></div>` : ''
       }</div>`;
