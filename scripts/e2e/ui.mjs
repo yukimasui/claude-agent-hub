@@ -11,7 +11,7 @@ import { HUB_URL, api, brief, check, cleanup, createAgent, failed, log, prefligh
 const MODES = {
   shot: '既存のエージェントの画面を撮影します（Claude は起動しません。ID 省略時は最後に作成したエージェント）',
   question: '質問するエージェントを作り、回答待ちパネルを撮影してから画面のクリック操作で回答します',
-  triage: '提案を出すエージェントを作り、仕分けボードをドラッグ＆ドロップとキー操作で仕分けて送信します',
+  triage: '提案を出すエージェントを作り、仕分けボードをドラッグ＆ドロップ・キー操作・拡大表示で仕分けて送信します',
 };
 
 const [mode, agentArg] = process.argv.slice(2);
@@ -134,11 +134,21 @@ async function runQuestion() {
   await captureAgent(page, 'after');
 }
 
+/** 要素が非表示になるまで待ちます（ダイアログの close は遅れて反映されることがあるため）。期限内に消えなければ false */
+function waitHidden(locator, timeout = 5000) {
+  return locator.waitFor({ state: 'hidden', timeout }).then(
+    () => true,
+    () => false,
+  );
+}
+
 async function runTriage() {
   const a = await createAgent({
     name: 'e2e-ui-triage',
     coat: 'calico',
-    prompt: 'このディレクトリの README.md に載せる内容の改善案を4つ考えて、どれを採用するか私に個別に判断させてください。ファイルはまだ変更しないでください。',
+    // 拡大表示で Markdown の補足を確かめるため、補足を箇条書きで書くよう頼みます
+    prompt:
+      'このディレクトリの README.md に載せる内容の改善案を5つ考えて、どれを採用するか私に個別に判断させてください。各提案の detail には、理由と具体的な変更内容を Markdown の箇条書きで3〜4行書いてください。ファイルはまだ変更しないでください。',
   });
   await waitFor(a.id, (x) => x.state === 'done', '応答完了', 180000);
   const page = await openPage(a.id);
@@ -171,6 +181,69 @@ async function runTriage() {
   await page.waitForTimeout(300);
   await page.locator('#triage').screenshot({ path: shot('board-1') });
   check((await page.locator('.tri-col[data-decision="none"] .tri-card').count()) === Math.max(0, count - 4), '仕分けた提案が各列に移動する');
+  const viewer = page.locator('#triage .tri-viewer');
+  check(!(await viewer.isVisible()), 'ドラッグ＆ドロップでは拡大表示が開かない');
+
+  // 拡大表示: カードのクリックで開き、前後の移動と判断・修正内容の入力を拡大表示の中で行います
+  const last = ids.at(-1);
+  if (count >= 5) {
+    await card(last).locator('.tri-text').click();
+    check(await viewer.isVisible(), 'カードのクリックで拡大表示が開く');
+    check((await viewer.locator('.tv').getAttribute('data-id')) === last, '拡大表示にクリックしたカードの提案が表示される');
+    await page.waitForTimeout(300);
+    await viewer.screenshot({ path: shot('viewer-0') });
+    await page.keyboard.press('ArrowLeft');
+    check((await viewer.locator('.tv').getAttribute('data-id')) === ids.at(-2), '← キーで前の提案に移動する');
+    await viewer.locator('button[data-nav="1"]').click();
+    check((await viewer.locator('.tv').getAttribute('data-id')) === last, '「次へ」で次の提案に移動する');
+    await viewer.locator('button[data-to="change"]').click();
+    await viewer.locator('.tri-note').fill('拡大表示から入力した修正内容です');
+    check((await viewer.locator('.tv').getAttribute('data-decision')) === 'change', '拡大表示から判断を変更できる');
+    await page.waitForTimeout(200);
+    await viewer.screenshot({ path: shot('viewer-1') });
+    // 文字を選択しながら背景で離しても閉じないことを確かめます
+    const box = await viewer.locator('.tv-detail').boundingBox();
+    await page.mouse.move(box.x + 10, box.y + 10);
+    await page.mouse.down();
+    await page.mouse.move(5, 5, { steps: 5 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    check(await viewer.isVisible(), '本文の文字を選択しながら背景で離しても拡大表示は閉じない');
+    // 入力欄の外にフォーカスを移してから Esc で閉じます
+    await viewer.locator('.tv-scroll').focus();
+    await page.keyboard.press('Escape');
+    check(await waitHidden(viewer), 'Esc で拡大表示が閉じる');
+    // 拡大表示で入力した修正内容がボードの DOM に入るのは、close イベントで描き直したときです。
+    // close イベントは Esc の後に遅れて発火するため、描き直しが終わるのを待ってから値を確かめます
+    const noteOnBoard = await page
+      .waitForFunction(
+        ([id, value]) => document.querySelector(`.tri-col[data-decision="change"] .tri-card[data-id="${CSS.escape(id)}"] .tri-note`)?.value === value,
+        [last, '拡大表示から入力した修正内容です'],
+        { timeout: 5000 },
+      )
+      .then(
+        () => true,
+        () => false,
+      );
+    check(noteOnBoard, '拡大表示での判断と修正内容がボードに反映される');
+    // Enter キーでも開け、背景のクリックで閉じられます
+    await card(ids[0]).focus();
+    await page.keyboard.press('Enter');
+    check(await viewer.isVisible(), 'カードにフォーカスして Enter で拡大表示が開く');
+    await page.mouse.click(5, 5);
+    check(await waitHidden(viewer), '背景のクリックで拡大表示が閉じる');
+    // ドラッグの後でも、キーボードで拡大ボタンを押せば開きます（同じ列へのドロップで、判断を変えずにドラッグだけを行います）
+    await card(ids[0]).dragTo(page.locator(`.tri-col[data-decision="${await card(ids[0]).evaluate((el) => el.closest('.tri-col').dataset.decision)}"]`));
+    await card(ids[0]).locator('.tri-expand').focus();
+    await page.keyboard.press('Enter');
+    check(await viewer.isVisible(), 'ドラッグの後でも、キーボードで拡大ボタンを押すと拡大表示が開く');
+    await page.keyboard.press('Escape');
+    check(await waitHidden(viewer), 'Esc で拡大表示が閉じる（拡大ボタンから開いた場合）');
+  } else {
+    log('提案が 5 件未満のため、拡大表示の確認を省略します');
+    check(false, '拡大表示の確認に必要な 5 件以上の提案がある');
+  }
+  await page.locator('#triage').screenshot({ path: shot('board-2') });
 
   await page.locator('.tri-foot button[data-act="send"]').click();
   await page.waitForTimeout(1500);

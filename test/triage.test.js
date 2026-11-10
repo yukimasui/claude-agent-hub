@@ -2,7 +2,7 @@
 // （localStorage や描画を扱う関数は対象外です）。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { composeReply, extractListItems, findOpenProposals, parseProposals } from '../public/triage.js';
+import { composeReply, extractListItems, findOpenProposals, neighborId, parseProposals, viewerHtml } from '../public/triage.js';
 
 const block = (body) => `前置きの説明\n\`\`\`proposals\n${body}\n\`\`\`\n後書き`;
 
@@ -101,4 +101,56 @@ test('composeReply は判断ごとに項目をまとめ、最後に指示を添�
 
 test('composeReply は該当の無い節と補足を省く', () => {
   assert.equal(composeReply({ items: [{ id: '1', title: 'A', decision: 'ng' }] }), '提案への判断です。\n\n【却下】\n- 1. A\n\n却下の項目は対応不要です。');
+});
+
+// ---------- 拡大表示 ----------
+
+const viewerItems = [
+  { id: '1', title: 'README を短くする', detail: '', decision: 'ok', note: '' },
+  { id: '2', title: '**手順**を追加', detail: '理由:\n- 初めての人が迷う\n- `npm run dev` を載せる', decision: 'none', note: '' },
+  { id: '3', title: '図を入れる', detail: '<script>alert(1)</script>', decision: 'change', note: '図は 1 枚に<b>' },
+];
+
+test('neighborId は提案に書かれた順で前後の id を返し、端や不明な id では null を返す', () => {
+  // 判断で列が変わっても、元の並びで順に読み進められるようにします
+  assert.equal(neighborId(viewerItems, '2', 1), '3');
+  assert.equal(neighborId(viewerItems, '2', -1), '1');
+  assert.equal(neighborId(viewerItems, '1', -1), null);
+  assert.equal(neighborId(viewerItems, '3', 1), null);
+  assert.equal(neighborId(viewerItems, '9', 1), null);
+  assert.equal(neighborId(viewerItems, null, 1), null);
+});
+
+test('viewerHtml は補足を Markdown として描画し、位置と判断済みの件数を表示する', () => {
+  const html = viewerHtml(viewerItems, '2');
+  assert.match(html, /data-id="2" data-decision="none"/);
+  assert.match(html, /提案 2 \/ 3/);
+  assert.match(html, /3件中 2件を判断済み/);
+  // 見出しのインライン装飾と、補足の箇条書き・コードが HTML になる
+  assert.match(html, /<strong>手順<\/strong>を追加/);
+  assert.match(html, /<ul><li>初めての人が迷う<\/li><li><code>npm run dev<\/code> を載せる<\/li><\/ul>/);
+  // 中ほどの提案では前後どちらにも移動できる
+  assert.doesNotMatch(html, /data-nav="-?1"[^>]*disabled/);
+  // 未判断の提案では修正内容の入力欄を出さず、未判断のボタンだけが押された状態になる
+  assert.doesNotMatch(html, /tri-note/);
+  assert.match(html, /data-to="none" aria-pressed="true"/);
+  assert.match(html, /data-to="ok" aria-pressed="false"/);
+});
+
+test('viewerHtml は「修正して実施」の提案に修正内容の入力欄を出し、内容をエスケープする', () => {
+  const html = viewerHtml(viewerItems, '3');
+  assert.match(html, /<textarea class="tri-note tv-note"[^>]*>図は 1 枚に&lt;b&gt;<\/textarea>/);
+  assert.match(html, /data-to="change" aria-pressed="true"/);
+  assert.doesNotMatch(html, /<script>/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+  // 最後の提案では「次へ」を押せない
+  assert.match(html, /data-nav="1"[^>]*disabled/);
+  assert.doesNotMatch(html, /data-nav="-1"[^>]*disabled/);
+});
+
+test('viewerHtml は補足の無い提案にその旨を表示し、見つからない id では空文字を返す', () => {
+  const html = viewerHtml(viewerItems, '1');
+  assert.match(html, /補足の説明はありません/);
+  assert.match(html, /data-nav="-1"[^>]*disabled/);
+  assert.equal(viewerHtml(viewerItems, '9'), '');
 });

@@ -580,7 +580,8 @@ catAnimButton.addEventListener('click', () => {
 });
 
 document.addEventListener('keydown', (e) => {
-  if ($('#dlg-new').open || $('#dlg-image').open || !e.altKey) return;
+  // 提案の拡大表示を開いている間は、エージェントの選択を切り替えません（切り替えるとボードごと閉じ、読んでいた提案を見失うため）
+  if ($('#dlg-new').open || $('#dlg-image').open || document.querySelector('.tri-viewer[open]') || !e.altKey) return;
   if (e.key === 'ArrowUp') moveSelection(-1);
   else if (e.key === 'ArrowDown') moveSelection(1);
   else if (/^[1-9]$/.test(e.key)) select(agents[Number(e.key) - 1]?.id);
