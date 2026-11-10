@@ -27,6 +27,7 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
+import { applyQueueOp, hasOpenProposals, sendBlockReason } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
 import { readTranscript } from './lib/transcript.js';
 
@@ -239,82 +240,11 @@ store.on('change', broadcast);
 
 // ---------- 送信ガードとタスクキュー ----------
 
-/** tmux に文字を流し込むと事故になる状況なら理由を返すにゃ */
-function sendBlockReason(a) {
-  if (!a.alive) return 'エージェントは停止しています。';
-  if (a.pending.length) return '回答待ちのダイアログがあります。先にダイアログへ回答するか、キューに追加してください。';
-  if (a.state === 'waiting') return 'ターミナルでダイアログが表示されています。ターミナルタブで確認するか、キューに追加してください。';
-  if (a.state === 'starting') return '起動中です（信頼確認などのダイアログが表示されている可能性があります）。ターミナルタブで確認してください。';
-  return null;
-}
-
-const MAX_QUEUE = 50;
-
+// 操作の受け付けは lib/queue.js が判断し、ここでは Store への反映と送信の開始だけを行います
 function queueOp(a, body) {
-  const q = [...a.queue];
-  const find = () => {
-    const i = q.findIndex((x) => x.id === body.itemId);
-    if (i < 0) throw httpError(404, 'キューの項目が見つかりません');
-    return i;
-  };
-  const patch = {};
-  switch (body.op) {
-    case 'add': {
-      const text = String(body.text ?? '').trim();
-      if (!text) throw httpError(400, 'キューに追加する内容が空です');
-      if (q.length >= MAX_QUEUE) throw httpError(400, `キューは ${MAX_QUEUE} 件までです`);
-      const item = { id: randomBytes(4).toString('hex'), text, clearFirst: !!body.clearFirst, createdAt: Date.now() };
-      body.front ? q.unshift(item) : q.push(item);
-      break;
-    }
-    case 'update': {
-      const i = find();
-      const text = body.text != null ? String(body.text).trim() : q[i].text;
-      if (!text) throw httpError(400, '内容が空です');
-      q[i] = { ...q[i], text, ...(body.clearFirst != null ? { clearFirst: !!body.clearFirst } : {}) };
-      break;
-    }
-    case 'remove':
-      q.splice(find(), 1);
-      break;
-    case 'reorder': {
-      const ids = Array.isArray(body.ids) ? body.ids : [];
-      const byId = new Map(q.map((x) => [x.id, x]));
-      const next = ids.map((id) => byId.get(id)).filter(Boolean);
-      for (const x of q) if (!next.includes(x)) next.push(x);
-      q.splice(0, q.length, ...next);
-      break;
-    }
-    case 'pause':
-      Object.assign(patch, { queuePaused: true, queueNote: '手動で一時停止中' });
-      break;
-    case 'resume':
-      Object.assign(patch, { queuePaused: false, queueNote: '' });
-      break;
-    case 'sendNext': {
-      // 一時停止中でも先頭を 1 件だけ送るにゃ
-      if (!q.length) throw httpError(400, 'キューが空です');
-      const blocked = sendBlockReason(a);
-      if (blocked) throw Object.assign(httpError(409, blocked), { code: 'blocked' });
-      if (a.state === 'running' || a.state === 'compacting') throw httpError(409, 'エージェントが作業中です。完了後に送信されます。');
-      store.patch(a.id, { queue: q });
-      dispatchNext(a.id, { force: true }).catch((e) => console.error(e));
-      return;
-    }
-    default:
-      throw httpError(400, `不明な操作です: ${body.op}`);
-  }
-  store.patch(a.id, { queue: q, ...patch });
-}
-
-/** 判断待ちの提案（proposals ブロック）が最後に残っているかを調べるにゃ */
-function hasOpenProposals(a) {
-  const items = readTranscript(a.transcriptPath, 40);
-  for (let i = items.length - 1; i >= 0; i--) {
-    if (items[i].role === 'user') return false;
-    if (items[i].role === 'assistant' && /```proposals/.test(items[i].text)) return true;
-  }
-  return false;
+  const { fields, sendNext } = applyQueueOp(a, body);
+  store.patch(a.id, fields);
+  if (sendNext) dispatchNext(a.id, { force: true }).catch((e) => console.error(e));
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -336,7 +266,7 @@ store.on('change', (id) => {
 async function dispatchNext(id, { force = false } = {}) {
   const a = store.get(id);
   if (!readyForNext(a) || (a.queuePaused && !force)) return;
-  if (!force && hasOpenProposals(a)) {
+  if (!force && hasOpenProposals(readTranscript(a.transcriptPath, 40))) {
     store.patch(id, { queuePaused: true, queueNote: '判断待ちの提案があるため一時停止しました' });
     return;
   }
