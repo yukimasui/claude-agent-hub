@@ -3,7 +3,7 @@
 // および判断を入れた後に対象の提案が古くなった場合は判断を送らずに一時停止することを確かめます。
 import { brief, check, createAgent, log, queue, send, sleep, soft, transcriptOf, waitFor } from '../lib.mjs';
 import { findOpenProposals, proposalKey } from '../../../public/triage.js';
-import { MANUAL_PAUSE_NOTE, STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE } from '../../../lib/queue.js';
+import { STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE } from '../../../lib/queue.js';
 
 export const description = '提案ブロックの出力と、判断待ちの提案があるときのキューの一時停止・判断のキュー追加・古くなった判断の一時停止';
 
@@ -54,9 +54,8 @@ export default async function run() {
   s = await waitFor(a.id, (x) => x.queuePaused, '返答済みの提案への判断による一時停止', 20000);
   check(s.queueNote === STALE_REPLY_ANSWERED_NOTE, '返答済みの提案への判断は送らずに一時停止し、理由を表示する', s.queueNote);
 
-  // 手動の一時停止に切り替えてから新しい提案を出させ、「再開」したときに古い判断が新しい提案への返答として送られないことを確かめます。
-  // 古い判断による一時停止のまま「再開」すると、利用者が送ると決めたものとして照合せずに送るためです
-  await queue(a.id, { op: 'pause' });
+  // 古い判断による一時停止のまま新しい提案を出させ、単に「再開」したときに古い判断が新しい提案への返答として送られず、
+  // 押した時点の状況で照合し直した理由（返答済みではなく、新しい提案が出たため）で再び一時停止することを確かめます
   await send(a.id, 'README.md の改善案をもう一度 2 つ考えて、どれを採用するか私に個別に判断させてください。ファイルは変更しないでください。');
   await waitFor(a.id, (x) => x.state === 'running', '実行中');
   s = await waitFor(a.id, (x) => x.state === 'done', '2 つ目の提案の応答完了', 180000);
@@ -65,15 +64,15 @@ export default async function run() {
     log('新しい提案ブロックが無いため、新しい提案による一時停止は確認できませんでした');
     return;
   }
-  check(s.queuePaused && s.queueNote === MANUAL_PAUSE_NOTE, '手動の一時停止が続いている', brief(s));
+  check(s.queuePaused && s.queueNote === STALE_REPLY_ANSWERED_NOTE, '古い判断による一時停止が続いている', brief(s));
   await queue(a.id, { op: 'resume' });
-  s = await waitFor(a.id, (x) => x.queuePaused, '新しい提案による一時停止', 20000);
-  check(s.queueNote === STALE_REPLY_NEW_PROPOSAL_NOTE, '新しい提案が出た後は古い判断を送らずに一時停止し、理由を表示する', s.queueNote);
+  s = await waitFor(a.id, (x) => x.queuePaused, '再開後の照合による一時停止', 20000);
+  check(s.queueNote === STALE_REPLY_NEW_PROPOSAL_NOTE, '単に再開すると照合し直し、新しい提案が出たことを理由に再び一時停止する', s.queueNote);
   check(s.queue.length === 1 && s.queue[0].text === stale, '古い判断はキューに残る', JSON.stringify(s.queue));
   check(!(await userTexts(a.id)).some((t) => t.includes('古い判断を受け取りました')), '古い判断は送られていない');
 
-  // 理由を確かめたうえで「再開」すると、古い判断をそのまま送ります
-  await queue(a.id, { op: 'resume' });
+  // 画面の「古い判断を送って再開」と同じ操作で、古い判断をそのまま送ります
+  await queue(a.id, { op: 'resume', staleReply: 'send', itemId: s.queue[0].id });
   s = await waitFor(a.id, (x) => !x.queue.length && x.state === 'done', '古い判断の送信完了', 180000);
-  check((await userTexts(a.id)).some((t) => t.includes('古い判断を受け取りました')), '再開すると古い判断をそのまま送る');
+  check((await userTexts(a.id)).some((t) => t.includes('古い判断を受け取りました')), '「古い判断を送って再開」で古い判断をそのまま送る');
 }

@@ -7,7 +7,7 @@ import { esc } from './md.js';
  * openKey は判断待ちの提案の proposalKey で、判断待ちの提案がなければ null、会話をまだ読み込んでいないなどで分からないときは undefined を渡します。
  * 対象の提案がもう判断待ちでない判断は stale にします。基準はサーバが先頭の判断を送る前に照合する処理（lib/queue.js の proposalPauseNote）と同じで、
  * 順番が来ると送らずに一時停止する項目を、並べ替えや削除の前に見分けられるようにするためです。
- * 分からないときや、対象の記録がない判断（記録を始める前に入ったものや「再開」で送ると決めたもの）は、照合されずに送られるので stale にしません。
+ * 分からないときや、対象の記録がない判断（記録を始める前に入ったものや「古い判断を送って再開」で送ると決めたもの）は、照合されずに送られるので stale にしません。
  * テストできるよう DOM には触れません。
  * @returns {{ stale: boolean, label: string, title: string } | null}
  */
@@ -30,6 +30,28 @@ export function replyMark(item, openKey) {
 }
 
 /**
+ * 一時停止中のキューの先頭が古い判断（replyMark が stale）なら、その項目を返します（そうでなければ null）。
+ * このときは「再開」の代わりに「古い判断を送って再開」「古い判断を削除して再開」を出し、古い判断の扱いを利用者に選んでもらいます。
+ * 単なる「再開」では、送る前の照合で再び一時停止するだけになり、操作の結果が分かりにくいためです。
+ * 古いかどうかが分からないとき（openKey が undefined）は null を返し、通常の「再開」を出します。サーバが送る前に照合し、古ければ再び一時停止します。
+ * テストできるよう DOM には触れません。
+ */
+export function staleHead(agent, openKey) {
+  const head = agent.queue?.[0];
+  return agent.queuePaused && replyMark(head, openKey)?.stale ? head : null;
+}
+
+/** 見出しの一時停止・再開のボタンです */
+function resumeButtons(agent, openKey) {
+  if (!agent.queuePaused) return '<button type="button" data-op="pause">一時停止</button>';
+  const stale = staleHead(agent, openKey);
+  if (!stale) return '<button type="button" data-op="resume" class="primary">再開</button>';
+  const id = esc(stale.id);
+  return `<button type="button" data-op="resumeDrop" data-item="${id}" title="先頭の古い判断をキューから削除し、続く項目から送信を再開します">古い判断を削除して再開</button>
+      <button type="button" data-op="resumeSend" data-item="${id}" title="先頭の古い判断を、今の会話にそのまま送信してから続く項目を送信します">古い判断を送って再開</button>`;
+}
+
+/**
  * root にキューを描画するにゃ。
  * op(body) はサーバの queue 操作を呼ぶ関数（Promise）にゃ
  * openKey は判断待ちの提案の proposalKey です（replyMark を参照してください）
@@ -49,8 +71,7 @@ export function renderQueue(root, agent, op, openKey) {
   root.innerHTML = `<header class="queue-head">
       <b>キュー</b><span class="muted">${q.length}件</span>
       ${status}
-      <span class="spacer"></span>
-      ${agent.queuePaused ? '<button type="button" data-op="resume" class="primary">再開</button>' : '<button type="button" data-op="pause">一時停止</button>'}
+      ${resumeButtons(agent, openKey)}
       <button type="button" data-op="sendNext" ${q.length ? '' : 'disabled'} title="一時停止中でも先頭の 1 件だけを送信します">先頭を今すぐ送信</button>
     </header>
     <ol class="queue-list">
@@ -113,6 +134,10 @@ export function renderQueue(root, agent, op, openKey) {
       case 'resume':
       case 'sendNext':
         return op({ op: b.dataset.op });
+      case 'resumeSend':
+      case 'resumeDrop':
+        // 描画した時点の先頭の項目を指定し、その後にキューが変わっていても、利用者が見ていた判断だけを扱います
+        return op({ op: 'resume', staleReply: b.dataset.op === 'resumeSend' ? 'send' : 'drop', itemId: b.dataset.item });
       case 'remove':
         return op({ op: 'remove', itemId: id });
       case 'edit':

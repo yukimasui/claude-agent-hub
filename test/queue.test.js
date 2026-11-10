@@ -8,7 +8,7 @@ import {
   applyQueueOp, hasOpenProposals, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
 import { proposalKey, findOpenProposals } from '../public/triage.js';
-import { replyMark } from '../public/queue.js';
+import { replyMark, staleHead } from '../public/queue.js';
 
 /** 送信してよい状態のエージェントを基本に、指定したフィールドだけを変えたものを作ります */
 const agent = (fields = {}) => ({ alive: true, pending: [], state: 'idle', queue: [], queuePaused: false, queueNote: '', ...fields });
@@ -317,13 +317,29 @@ test('対象の提案を記録していない判断は、照合せずに送る',
   assert.equal(proposalPauseNote(a, []), null);
 });
 
-test('古い判断による一時停止から再開すると、先頭の判断を照合せずに送れるようにする', () => {
-  // 「再開」は、利用者が内容を確かめたうえでそのまま送ると決めた操作です
+test('古い判断による一時停止から単に再開しても、古い判断は送らずにその時点の理由で再び一時停止する', () => {
+  // 後ろの項目を進めるつもりで「再開」を押しても、古い判断が意図せず送られないようにします
   const queue = [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')];
   const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
-  for (const queueNote of [STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE]) {
+  // 返答済みとして止まった後に新しい提案が出た場合も、押した時点の状況に合わせた理由になります
+  const a = agent({ queue, queuePaused: true, queueNote: STALE_REPLY_ANSWERED_NOTE });
+  const r = applyQueueOp(a, { op: 'resume' });
+  assert.equal(r.fields.queuePaused, false);
+  assert.equal(r.fields.queueNote, '');
+  assert.equal(r.fields.queue[0].proposal, openKey);
+  const resumed = { ...a, ...r.fields };
+  assert.equal(proposalPauseNote(resumed, [...openItems, { role: 'user', text: 'A 案で', ts: 't3' }, { ...newer, ts: 't4' }]), STALE_REPLY_NEW_PROPOSAL_NOTE);
+  assert.equal(proposalPauseNote(resumed, [...openItems, { role: 'user', text: 'A 案で', ts: 't3' }]), STALE_REPLY_ANSWERED_NOTE);
+  // 対象の提案が判断待ちに戻っていれば（ターミナルで巻き戻した場合など）、古くないので通常どおり送ります
+  assert.equal(proposalPauseNote(resumed, openItems), null);
+});
+
+test('「古い判断を送って再開」では、指定した判断を照合せずに送れるようにする', () => {
+  const queue = [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')];
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  for (const queueNote of [STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE, MANUAL_PAUSE_NOTE]) {
     const a = agent({ queue, queuePaused: true, queueNote });
-    const r = applyQueueOp(a, { op: 'resume' });
+    const r = applyQueueOp(a, { op: 'resume', staleReply: 'send', itemId: 'r1' });
     assert.equal(r.fields.queuePaused, false, queueNote);
     assert.equal(r.fields.queueNote, '', queueNote);
     assert.deepEqual(r.fields.queue[0], { id: 'r1', text: '判断', clearFirst: false, createdAt: 1, reply: true }, queueNote);
@@ -332,9 +348,26 @@ test('古い判断による一時停止から再開すると、先頭の判断�
     // 元のキューは書き換えません
     assert.equal(queue[0].proposal, openKey, queueNote);
   }
-  // 手動の一時停止からの再開では、照合の記録を残します（古くなっていれば送る前に改めて止めるため）
-  const manual = applyQueueOp(agent({ queue, queuePaused: true, queueNote: MANUAL_PAUSE_NOTE }), { op: 'resume' });
-  assert.equal(manual.fields.queue[0].proposal, openKey);
+});
+
+test('「古い判断を削除して再開」では、指定した判断を削除して続く項目から送る', () => {
+  const queue = [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')];
+  const a = agent({ queue, queuePaused: true, queueNote: STALE_REPLY_ANSWERED_NOTE });
+  const r = applyQueueOp(a, { op: 'resume', staleReply: 'drop', itemId: 'r1' });
+  assert.equal(r.fields.queuePaused, false);
+  assert.equal(r.fields.queueNote, '');
+  assert.deepEqual(r.fields.queue.map((x) => x.id), ['x1']);
+  assert.equal(queue.length, 2);
+  const answered = [...openItems, { role: 'user', text: 'A 案で', ts: 't3' }];
+  assert.equal(proposalPauseNote({ ...a, ...r.fields }, answered), null);
+});
+
+test('古い判断の扱いの指定は、提案への判断の項目だけを受け付ける', () => {
+  const a = agent({ queue: [item('r1', '判断', { reply: true, proposal: openKey }), item('x1')], queuePaused: true, queueNote: STALE_REPLY_ANSWERED_NOTE });
+  // 画面を開いた後に削除された項目や、判断ではない項目を誤って扱わないようにします
+  assertHttpError(() => applyQueueOp(a, { op: 'resume', staleReply: 'drop', itemId: 'gone' }), 404, /見つかりません/);
+  assertHttpError(() => applyQueueOp(a, { op: 'resume', staleReply: 'drop', itemId: 'x1' }), 400, /提案への判断ではない/);
+  assertHttpError(() => applyQueueOp(a, { op: 'resume', staleReply: 'later', itemId: 'r1' }), 400, /不明な指定/);
 });
 
 test('古い判断による一時停止中に新しい判断を入れると、一時停止を解除して新しい判断から送る', () => {
@@ -402,4 +435,23 @@ test('先頭以外にある判断にも、対象の提案に応じた目印を�
   const queue = [item('r2', '新しい判断', { reply: true, proposal: proposalKey(newer) }), item('r1', '古い判断', { reply: true, proposal: openKey })];
   const key = openKeyOf([...openItems, newer]);
   assert.deepEqual(queue.map((x) => replyMark(x, key).stale), [false, true]);
+});
+
+test('一時停止中のキューの先頭が古い判断のときだけ、古い判断の扱いを選ぶ再開ボタンを出す', () => {
+  const newer = { role: 'assistant', text: '```proposals\n{"items":[{"title":"C 案"}]}\n```', ts: 't3' };
+  const staleKey = openKeyOf([...openItems, newer]);
+  const head = item('r1', '判断', { reply: true, proposal: openKey });
+  const paused = agent({ queue: [head, item('x1')], queuePaused: true, queueNote: MANUAL_PAUSE_NOTE });
+  // 手動の一時停止中でも、先頭が古い判断なら選んでもらいます（単なる再開では送る前の照合で再び止まるだけのため）
+  assert.equal(staleHead(paused, staleKey), head);
+  assert.equal(staleHead(paused, null), head);
+  // 対象の提案がまだ判断待ちなら、通常の再開で送れます
+  assert.equal(staleHead(paused, openKey), null);
+  // 古いかどうか分からないときは通常の再開にし、サーバの照合に任せます
+  assert.equal(staleHead(paused, undefined), null);
+  // 一時停止していない、先頭が判断でない、対象の記録がない場合も通常どおりです
+  assert.equal(staleHead({ ...paused, queuePaused: false }, staleKey), null);
+  assert.equal(staleHead({ ...paused, queue: [item('x1'), head] }, staleKey), null);
+  assert.equal(staleHead({ ...paused, queue: [item('r1', '判断', { reply: true })] }, staleKey), null);
+  assert.equal(staleHead(agent({ queuePaused: true }), staleKey), null);
 });
