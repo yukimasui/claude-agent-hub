@@ -373,6 +373,11 @@ function renderChat(items) {
     else if (it.role === 'question') html += questionHistory(it);
     else if (it.role === 'plan') html += planHistory(it);
     else if (it.role === 'todos') html += todosHistory(it);
+    else if (it.role === 'compact') {
+      // 圧縮の要約は長いため、既定では閉じておき、必要なときだけ本文を開けるようにします。
+      // 再描画で開閉状態を保てるよう、項目ごとに変わらない時刻を data-key に使います
+      html += `<details class="msg system compact" data-key="compact-${esc(it.ts || idx)}"><summary>会話を圧縮しました</summary><div class="compact-body">${esc(it.text)}</div></details>`;
+    }
     else html += `<div class="msg system">${esc(it.text)}</div>`;
   }
   flush();

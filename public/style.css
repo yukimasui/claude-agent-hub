@@ -114,6 +114,11 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 
 .msg code { font-family: var(--mono); font-size: 0.92em; background: var(--bg); padding: 0 4px; border-radius: 4px; }
 .msg.system { align-self: center; font-size: 12px; color: var(--muted); font-family: var(--mono); }
+/* 会話の圧縮の要約です。見出しだけをシステムの行として表示し、開いたときの本文は読みやすいよう左寄せにして枠内でスクロールさせます */
+details.compact { text-align: center; }
+details.compact > summary { cursor: pointer; }
+details.compact[open] { align-self: stretch; }
+.compact-body { margin: 6px auto 0; max-width: 860px; max-height: 50vh; overflow-y: auto; text-align: left; color: var(--text); font-size: 12px; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 6px; }
 .tools { align-self: flex-start; display: flex; flex-wrap: wrap; gap: 4px; max-width: 860px; }
 .tool { font-family: var(--mono); font-size: 11.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool b { color: var(--running); font-weight: 600; }

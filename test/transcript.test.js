@@ -212,6 +212,56 @@ test('利用者以外が起点の queued_command は利用者の発言として�
   assert.deepEqual(items, []);
 });
 
+// ---------- 利用者の発言ではない user 行 ----------
+
+// ターンの終了後に届いたバックグラウンドのタスクの完了通知です（Claude Code 2.1.304〜2.1.321 で確認した形式）。
+// 通常の user 行として記録され、行の origin.kind で利用者の発言と区別できます
+const notification = (summary, extra = {}) =>
+  user(
+    `<task-notification>\n<task-id>t1</task-id>\n<tool-use-id>toolu_01</tool-use-id>\n<output-file>/tmp/out</output-file>\n<status>completed</status>\n<summary>${summary}</summary>\n</task-notification>`,
+    { origin: { kind: 'task-notification' }, ...extra },
+  );
+
+test('ターンの後に届いたタスクの完了通知は、利用者の発言ではなくシステムの行として表示する', () => {
+  const items = read([
+    user('依頼'),
+    notification('Agent "調査" finished'),
+    notification('Background command "テスト" completed (exit code 0)'),
+    // origin のない記録でも、本文が完了通知のタグで始まるものは完了通知として扱います
+    notification('Monitor "ログ" stream ended', { origin: undefined }),
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.role, i.text]),
+    [
+      ['user', '依頼'],
+      ['system', '完了通知: Agent "調査" finished'],
+      ['system', '完了通知: Background command "テスト" completed (exit code 0)'],
+      ['system', '完了通知: Monitor "ログ" stream ended'],
+    ],
+  );
+});
+
+test('利用者が入力した発言は、完了通知のタグで始まっていても利用者の発言として表示する', () => {
+  const text = '<task-notification> の形式について教えてください';
+  const items = read([user(text, { origin: { kind: 'human' } })]);
+  assert.deepEqual(items, [{ role: 'user', text, ts: 't' }]);
+});
+
+test('会話の圧縮で作られた要約は、利用者の発言ではなく圧縮の項目として表示する', () => {
+  // 圧縮の要約は isCompactSummary 付きの user 行として記録されます（Claude Code 2.1.322 で確認した形式）
+  const summary = 'This session is being continued from a previous conversation.\n\n要約の本文';
+  const items = read([
+    user('依頼'),
+    user(summary, { isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+    user('続きの依頼'),
+  ]);
+  assert.deepEqual(items, [
+    { role: 'user', text: '依頼', ts: 't' },
+    { role: 'compact', text: summary, ts: 't' },
+    { role: 'user', text: '続きの依頼', ts: 't' },
+  ]);
+});
+
 // ---------- 画像 ----------
 
 // 1x1 の PNG と、各形式の先頭部分です（形式の判定は先頭のバイト列だけを見るため、本体は省略しています）
