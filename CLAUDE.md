@@ -14,11 +14,12 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `lib/store.js` | エージェント一覧と状態機械。イベント JSONL の追記分を読み（`ingest`）、`applyEvent` で状態・対話要求（`pending`）・キューの一時停止を更新する |
 | `lib/interactions.js` | 対話要求の分類（`kindOf`）と、ブラウザからの回答を hook の出力 JSON に変換する処理（`buildOutput`） |
 | `lib/queue.js` | 送信ガード（`sendBlockReason`）、キュー操作の受け付け（`applyQueueOp`）、判断待ちの提案の判定（`hasOpenProposals`。画面とそろえるため `public/triage.js` の `findOpenProposals` を使う）。エージェントの状態だけを見て判断し、Store への反映や tmux への送信は `server.js` が行う |
-| `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する |
+| `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する。画像は参照だけを項目に持たせ、画像 API の要求時に本体を読み出す（`readTranscriptImage`） |
 | `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成、bracketed paste での送信、キー送信、画面取得） |
+| `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`） |
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |
 | `hooks/summarize.cjs` | ツール入力の 1 行要約（hook とサーバの両方から使う） |
-| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`queue.js`、`cats.js`、`app.js` |
+| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`app.js` |
 | `public/vendor/` | 利用者の了承を得て同梱しているブラウザ用ライブラリ（現在は mermaid）。配布ファイルを改変せずに置き、取得元・照合方法・更新手順は各ディレクトリの `README.md` に記載する |
 | `test/` | `node:test` による単体テスト（Claude を起動しない） |
 | `scripts/dev.mjs` | 開発用ハブのランチャー |
@@ -93,7 +94,7 @@ worktree ごとに `hooks/` と `public/` を持つので、開発用ハブは�
 
 - 外部依存を追加しない（Node 標準モジュールのみ）。追加が必要な場合は利用者に相談する。利用者が了承して `public/vendor/` に同梱したブラウザ用ライブラリは例外とする
 - コメントは日本語で、「なぜそうしているか」を書く。新しく書くコメント・文書は丁寧な口調にする
-- `public/` はブラウザで直接読み込む ES モジュールなので、ビルドを前提にした書き方や Node 専用の API を使わない。テストしたい処理は DOM に触れない関数として切り出す
+- `public/`（`public/vendor/` を除く）はブラウザで直接読み込む ES モジュールなので、ビルドを前提にした書き方や Node 専用の API を使わない。テストしたい処理は DOM に触れない関数として切り出す
 
 ## 検証コマンド
 
