@@ -262,6 +262,78 @@ test('会話の圧縮で作られた要約は、利用者の発言ではなく�
   ]);
 });
 
+// ---------- /compact のあとの表示 ----------
+
+// ハブから /compact を送ったときの transcript の並びです（Claude Code 2.1.322 で確認した形式）。
+// 要約の行が /compact のコマンドの行より先に書かれ、その後にコマンドの出力（端末の色のエスケープシーケンスと hook の実行結果を含む）が続きます。
+// パスは架空のものです
+const ESC = '\x1b';
+const compactLines = () => [
+  { type: 'system', subtype: 'compact_boundary', timestamp: 't' },
+  user('This session is being continued from a previous conversation.\n\n要約', { isCompactSummary: true, isVisibleInTranscriptOnly: true }),
+  user('<local-command-caveat>Caveat</local-command-caveat>', { isMeta: true }),
+  user('<command-name>/compact</command-name>\n<command-message>compact</command-message>\n<command-args></command-args>'),
+  user(
+    '<local-command-stdout>' +
+      [
+        `${ESC}[2mCompacted (ctrl+o to see full summary)${ESC}[22m`,
+        `${ESC}[2mPreCompact ['/opt/example/bin/node' '/opt/example/hooks/hub-hook.cjs'] completed successfully${ESC}[22m`,
+        `${ESC}[2mPreCompact ["/opt/example/bin/node" "/opt/example/plugins/precompact.mjs"] completed successfully: {}${ESC}[22m`,
+        `${ESC}[2mPostCompact ['/opt/example/bin/node' 'C:\\example\\hooks\\post.cjs'] failed: exit code 1${ESC}[22m`,
+      ].join('\n') +
+      '</local-command-stdout>',
+  ),
+];
+
+test('/compact の行とその出力を、「会話を圧縮しました」の項目より前に並べる', () => {
+  const items = read([user('依頼'), ...compactLines(), user('続きの依頼')]);
+  assert.deepEqual(
+    items.map((i) => i.role),
+    ['user', 'system', 'system', 'compact', 'user'],
+  );
+  assert.equal(items[1].text, '/compact');
+});
+
+test('コマンドの出力から端末の色のエスケープシーケンスを除き、hook の実行結果はパスを省いて表示する', () => {
+  const items = read(compactLines());
+  const out = items.find((i) => i.role === 'system' && i.text.startsWith('Compacted'));
+  assert.equal(
+    out.text,
+    [
+      'Compacted (ctrl+o to see full summary)',
+      'PreCompact の hook（hub-hook.cjs）: completed successfully',
+      'PreCompact の hook（precompact.mjs）: completed successfully',
+      'PostCompact の hook（post.cjs）: failed: exit code 1',
+    ].join('\n'),
+  );
+  assert.ok(!items.some((i) => /\x1b|\/opt\/example/.test(i.text ?? '')));
+});
+
+test('hook の実行結果に似ていない出力の行は、エスケープシーケンスを除くだけでそのまま表示する', () => {
+  const items = read([
+    user(`<local-command-stdout>${ESC}[1mSet model to haiku${ESC}[22m\nNote [not a hook] は対象外\n${ESC}]8;;http://example.com${ESC}\\リンク${ESC}]8;;${ESC}\\</local-command-stdout>`),
+  ]);
+  assert.deepEqual(items, [{ role: 'system', text: 'Set model to haiku\nNote [not a hook] は対象外\nリンク', ts: 't' }]);
+});
+
+test('自動の圧縮（/compact の行がない場合）や、/compact の行が要約より後に離れている場合は並べ替えない', () => {
+  const summary = user('要約', { isCompactSummary: true });
+  assert.deepEqual(
+    read([user('依頼'), summary, assistant([{ type: 'text', text: '続けます' }])]).map((i) => i.role),
+    ['user', 'compact', 'assistant'],
+  );
+  // 要約の後に別の項目があってから /compact を実行した場合は、その /compact は別の圧縮なので要約は動かしません
+  assert.deepEqual(
+    read([summary, assistant([{ type: 'text', text: '応答' }]), user('<command-name>/compact</command-name>'), user('<local-command-stdout>Compacted</local-command-stdout>')]).map((i) => [i.role, i.text]),
+    [
+      ['compact', '要約'],
+      ['assistant', '応答'],
+      ['system', '/compact'],
+      ['system', 'Compacted'],
+    ],
+  );
+});
+
 // ---------- 画像 ----------
 
 // 1x1 の PNG と、各形式の先頭部分です（形式の判定は先頭のバイト列だけを見るため、本体は省略しています）
