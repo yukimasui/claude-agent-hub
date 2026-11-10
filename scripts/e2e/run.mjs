@@ -27,8 +27,9 @@ if (!name || name === '--help' || name === '-h' || !names.includes(name)) {
 環境変数:
   HUB_URL       接続先のハブ（既定: http://localhost:4400 = npm run dev の開発用ハブ）
   E2E_MODEL     エージェントのモデル（既定: haiku）
-  E2E_WORKDIR   作業ディレクトリを作る場所（既定: OS の一時ディレクトリ）
-  E2E_KEEP=1    終了後もエージェントと作業ディレクトリを残す（画面確認用）`);
+  E2E_WORKDIR   作業ディレクトリを置く場所。指定先の下の agent-hub-e2e を使う
+                （既定: ~/.agent-hub-dev/e2e-work。毎回同じパスを使い、実行の開始時に前回の中身を消す）
+  E2E_KEEP=1    終了後もエージェントと作業ディレクトリの中身を残す（画面確認用）`);
   process.exit(name && !['--help', '-h'].includes(name) ? 1 : 0);
 }
 

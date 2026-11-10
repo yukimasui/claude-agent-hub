@@ -1,9 +1,9 @@
 // E2E シナリオと画面確認スクリプトで共有する処理です。
 // 稼働中のハブ（既定は開発用ハブ）の HTTP API を叩いて、実際の Claude Code を操作します。
-import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { clearWorkdir, prepareWorkdir, releaseLock, resolveWorkdir } from './workdir.mjs';
 
 export const HUB_URL = (process.env.HUB_URL || 'http://localhost:4400').replace(/\/+$/, '');
 export const KEEP = process.env.E2E_KEEP === '1';
@@ -65,34 +65,20 @@ export async function preflight() {
 // ---------- 作業ディレクトリ ----------
 
 let workdir = null;
-let ownsWorkdir = false;
 
 /**
- * 実行ごとの作業ディレクトリを作ります。
- * E2E_WORKDIR を指定すると、その下に作ります（信頼済みのディレクトリを指定すれば信頼確認を省けます）。
- * シナリオに必要な権限だけを .claude/settings.local.json で許可し、利用者の設定には手を加えません。
+ * 作業ディレクトリを用意して返します（1 回の実行の中では同じディレクトリを使います）。
+ * 毎回同じパスを使うため、信頼確認ダイアログが出るのは初回だけです。
+ * 前回の生成ファイルを消してから設定を作り直し、実行中はロックで同時実行を防ぎます（詳細は workdir.mjs）。
  */
 export function getWorkdir() {
   if (workdir) return workdir;
-  const base = process.env.E2E_WORKDIR ? path.resolve(process.env.E2E_WORKDIR) : os.tmpdir();
-  fs.mkdirSync(base, { recursive: true });
-  workdir = fs.mkdtempSync(path.join(base, 'agent-hub-e2e-'));
-  ownsWorkdir = true;
-  fs.mkdirSync(path.join(workdir, '.claude'), { recursive: true });
-  fs.writeFileSync(
-    path.join(workdir, '.claude', 'settings.local.json'),
-    JSON.stringify(
-      {
-        // queue シナリオの待ち時間用の sleep と、elicitation シナリオの MCP ツールだけを確認なしで許可します
-        permissions: { allow: ['Bash(sleep:*)', 'mcp__elicit__ask_profile'] },
-        // elicitation シナリオで置く .mcp.json を、承認ダイアログなしで読み込ませます
-        enableAllProjectMcpServers: true,
-      },
-      null,
-      2,
-    ),
-  );
-  fs.writeFileSync(path.join(workdir, 'README.md'), '# E2E 用の作業ディレクトリ\n\nAgent Hub の E2E シナリオが一時的に使うディレクトリです。\n');
+  const dir = resolveWorkdir();
+  prepareWorkdir(dir);
+  // 例外で中断した場合もロックが残らないよう、終了時に外します（強制終了で残ったロックは次回の実行で取り直します）
+  process.once('exit', () => releaseLock(dir));
+  workdir = dir;
+  log(`作業ディレクトリ: ${dir}`);
   return workdir;
 }
 
@@ -139,17 +125,29 @@ async function acceptTrustDialog(id, timeout = 60000) {
   throw new Error('エージェントが起動中のまま進みません（ターミナルタブで画面を確認してください）');
 }
 
-/** 作成したエージェントと作業ディレクトリを片付けます。E2E_KEEP=1 なら残して場所を表示します */
+/**
+ * 作成したエージェントを削除し、作業ディレクトリの中身を消します。
+ * 作業ディレクトリ自体（と目印）は残し、次回も同じパスを使うことで信頼の記録を無駄にしません。
+ * E2E_KEEP=1 なら、エージェントと中身を残して場所を表示します（中身は次回の実行の開始時に消えます）。
+ */
 export async function cleanup() {
   if (KEEP) {
     if (created.length) log(`E2E_KEEP=1 のためエージェントを残します: ${created.join(', ')}`);
-    if (workdir) log(`作業ディレクトリ: ${workdir}`);
-    return;
+    if (workdir) log(`作業ディレクトリの中身を残します（次回の実行の開始時に消えます）: ${workdir}`);
+  } else {
+    for (const id of created.splice(0)) {
+      await api('DELETE', `/api/agents/${id}`).catch((e) => log(`削除に失敗しました: ${id}: ${e.message}`));
+    }
+    if (workdir) {
+      try {
+        clearWorkdir(workdir);
+      } catch (e) {
+        // 片付けの失敗でシナリオの結果が分からなくならないよう、表示だけにとどめます
+        log(`作業ディレクトリの中身を消せませんでした: ${e.message}`);
+      }
+    }
   }
-  for (const id of created.splice(0)) {
-    await api('DELETE', `/api/agents/${id}`).catch((e) => log(`削除に失敗しました: ${id}: ${e.message}`));
-  }
-  if (workdir && ownsWorkdir) fs.rmSync(workdir, { recursive: true, force: true });
+  if (workdir) releaseLock(workdir);
 }
 
 // ---------- 判定 ----------
