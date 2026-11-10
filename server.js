@@ -30,7 +30,7 @@ import { buildOutput } from './lib/interactions.js';
 import { PROPOSAL_PAUSE_NOTE, applyQueueOp, sendBlockReason, shouldPauseForProposals } from './lib/queue.js';
 import * as tmux from './lib/tmux.js';
 import { readTranscript, readTranscriptImage } from './lib/transcript.js';
-import { checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
+import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage } from './lib/http.js';
 
 const store = new Store();
 
@@ -328,8 +328,7 @@ function serveStatic(res, pathname) {
 }
 
 async function api(req, res, url) {
-  // 画像はツール呼び出し ID などを含む参照で指定するため、ほかの操作とは別の形式のパスにしています
-  const im = url.pathname.match(/^\/api\/agents\/([\w-]+)\/images\/([\w.-]{1,200})$/);
+  const im = url.pathname.match(IMAGE_PATH_RE);
   if (im) {
     if (req.method !== 'GET') throw httpError(405, 'Method not allowed');
     checkImageRequest(req);

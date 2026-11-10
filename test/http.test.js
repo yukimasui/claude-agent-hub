@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import { checkImageRequest, checkRequest, httpError, sendImage } from '../lib/http.js';
+import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage } from '../lib/http.js';
 import { readTranscriptImage } from '../lib/transcript.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-http-'));
@@ -34,7 +34,7 @@ before(async () => {
   server = http.createServer((req, res) => {
     try {
       checkRequest(req);
-      const m = new URL(req.url, 'http://localhost').pathname.match(/^\/api\/agents\/([\w-]+)\/images\/([\w.-]{1,200})$/);
+      const m = new URL(req.url, 'http://localhost').pathname.match(IMAGE_PATH_RE);
       if (!m) throw httpError(404, 'Not found');
       checkImageRequest(req);
       const img = readTranscriptImage(agents[m[1]], m[2]);

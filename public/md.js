@@ -1,6 +1,6 @@
 // 依存なしの軽量 Markdown レンダラにゃ。
 // 見出し・リスト（入れ子・タスク）・表・引用・水平線・コードブロック・インライン装飾・リンクに対応するにゃ。
-// ```mermaid は同梱の mermaid（public/vendor/mermaid/）を遅延読み込みして図にするにゃ（読めなければコードのまま表示）
+// ```mermaid は同梱の mermaid（public/vendor/mermaid/）を遅延読み込みして図にします（読み込めない場合はコードのまま表示します）。
 
 export const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
