@@ -146,6 +146,18 @@ test('Read で読んだ画像は、base64 を含めずに参照だけをツー�
   assert.ok(!JSON.stringify(items).includes(PNG.toString('base64')));
 });
 
+test('1 つのツール結果に画像が複数ある場合は、どの画像のものか分からない寸法を付けない', () => {
+  // toolUseResult の寸法は 1 枚の画像についての情報なので、複数の画像に同じ寸法を付けると 2 枚目以降が誤った寸法になります
+  const items = read([
+    assistant([toolUse('toolu_01', 'mcp__browser__screenshot', {})]),
+    user([toolResult('toolu_01', [image(PNG), image(PNG)])], readFile()),
+  ]);
+  assert.deepEqual(items[0].images, [
+    { ref: 'toolu_01.0', mime: 'image/png' },
+    { ref: 'toolu_01.1', mime: 'image/png' },
+  ]);
+});
+
 test('利用者が貼り付けた画像は、同じ行の本文の項目に付け、本文がなければ画像だけの項目にする', () => {
   // 貼り付けた画像は、本文（[Image #1] を含む）と同じ content 配列に入り、行の uuid で参照します（Claude Code 2.1.318 で確認した形式）
   const items = read([
