@@ -29,7 +29,7 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, clearFinished, proposalPauseNote, sendBlockReason } from './lib/queue.js';
+import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, clearFinished, clearPauseNote, proposalPauseNote, sendBlockReason } from './lib/queue.js';
 import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
 import * as tmux from './lib/tmux.js';
@@ -318,15 +318,22 @@ async function dispatchNext(id, { force = false } = {}) {
   }
   dispatching.add(id);
   const item = a.queue[0];
+  const before = a.sessionId;
   try {
     if (item.clearFirst) {
-      const before = a.sessionId;
       await tmux.sendText(a.paneId, '/clear');
       // /clear で新しいセッションの SessionStart が届くのを待ちます（判定は lib/queue.js の clearFinished）
       for (let i = 0; i < 40 && !clearFinished(before, store.get(id)); i++) await sleep(150);
       await sleep(400);
     }
     const cur = store.get(id);
+    // 新しいセッションを確認できなかった場合は、リセットされていない会話に本文を送らないよう、項目を残して一時停止します
+    // （判定と再開時の動きは lib/queue.js の clearPauseNote と CLEAR_UNCONFIRMED_PAUSE_NOTE）
+    const clearNote = item.clearFirst ? clearPauseNote(before, cur) : null;
+    if (clearNote) {
+      store.patch(id, { queuePaused: true, queueNote: clearNote });
+      return;
+    }
     if (!cur || !cur.alive || cur.pending.length) return;
     await tmux.sendText(cur.paneId, item.text);
     const now = Date.now();

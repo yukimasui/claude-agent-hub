@@ -325,6 +325,51 @@ test('ingest は作り直されたイベントファイルを、前回の読み�
   assert.equal(store.get(id).lastPrompt, '作り直したファイル');
 });
 
+test('ingest は同じ inode のまま書き直されたイベントファイルを、前回の読み込み位置より長くても先頭から読み直す', () => {
+  const { store, id } = setup();
+  const file = store.eventsFile(id);
+  const line = (ev) => JSON.stringify({ ts: 1, ...ev }) + '\n';
+  fs.appendFileSync(file, line({ event: 'SessionStart', session_id: 's1' }));
+  store.ingest(id);
+  assert.equal(store.get(id).sessionId, 's1');
+
+  // 消した直後に作ったファイルが同じ inode 番号を再利用した場合を、確実に同じ inode になる上書き（切り詰めて書き直す）で再現します。
+  // 書き直したファイルは前回の読み込み位置より長いので、inode とサイズだけでは作り直しを判別できません
+  const ino = fs.statSync(file).ino;
+  fs.writeFileSync(file, line({ event: 'SessionStart', session_id: 's2' }) + line({ event: 'UserPromptSubmit', prompt: '書き直したファイル' }));
+  assert.equal(fs.statSync(file).ino, ino);
+  store.ingest(id);
+  assert.equal(store.get(id).sessionId, 's2');
+  assert.equal(store.get(id).state, 'running');
+  assert.equal(store.get(id).lastPrompt, '書き直したファイル');
+
+  // 書き直した後の通常の追記は、続きから読みます（先頭から読み直して同じイベントを二重に反映しないこと）
+  fs.appendFileSync(file, line({ event: 'Stop' }));
+  store.ingest(id);
+  assert.equal(store.get(id).state, 'done');
+  fs.appendFileSync(file, line({ event: 'UserPromptSubmit', prompt: '続きの指示' }));
+  store.ingest(id);
+  assert.equal(store.get(id).state, 'running');
+  assert.equal(store.get(id).lastPrompt, '続きの指示');
+});
+
+test('ingest は先頭の比較に使う長さより短い位置から追記が続いても、作り直しと誤って判定しない', () => {
+  const { store, id } = setup();
+  const file = store.eventsFile(id);
+  // 先頭の比較用に覚える内容が、読み進めるにつれて伸びていく場合を確かめるため、行を数バイトずつに分けて書きます
+  const text = JSON.stringify({ ts: 1, event: 'UserPromptSubmit', prompt: '少しずつ書かれた行' }) + '\n';
+  const bytes = Buffer.from(text);
+  let applied = 0;
+  store.on('change', () => applied++);
+  for (let i = 0; i < bytes.length; i += 5) {
+    fs.appendFileSync(file, bytes.subarray(i, i + 5));
+    store.ingest(id);
+  }
+  assert.equal(store.get(id).lastPrompt, '少しずつ書かれた行');
+  // 1 行だけなので、反映は 1 回です（途中で先頭から読み直すと、同じ行を二重に反映します）
+  assert.equal(applied, 1);
+});
+
 test('init は agents.json とイベントファイルから状態を復元する', () => {
   const { id, emit } = setup();
   emit({ event: 'SessionStart', session_id: 'restored' }, { event: 'UserPromptSubmit', prompt: '復元' }, { event: 'Stop' });

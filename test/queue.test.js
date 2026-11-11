@@ -4,8 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
-  STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE,
-  applyQueueOp, clearFinished, hasOpenProposals, proposalPauseNote, sendBlockReason,
+  STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, CLEAR_UNCONFIRMED_PAUSE_NOTE,
+  applyQueueOp, clearFinished, clearPauseNote, hasOpenProposals, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
 import { proposalKey, findOpenProposals } from '../public/triage.js';
 import { queueSignature, replyMark, sendNextTitle, staleHead } from '../public/queue.js';
@@ -511,4 +511,34 @@ test('「/clear 付き」の項目は、セッション ID が変わるまで /c
   // エージェントが削除されたか終了した場合は、待っても新しいセッションは始まらないので待つのをやめます
   assert.equal(clearFinished(before, undefined), true);
   assert.equal(clearFinished(before, agent({ sessionId: 's1', alive: false })), true);
+});
+
+test('「/clear 付き」の項目で /clear の完了を確認できなかったら、本文を送らずに一時停止する理由を返す', () => {
+  const before = 's1';
+  // 待ち終えてもセッション ID が変わっていなければ、/clear が効いていない会話に本文を送らないよう一時停止します
+  assert.equal(clearPauseNote(before, agent({ sessionId: 's1' })), CLEAR_UNCONFIRMED_PAUSE_NOTE);
+  // 回答待ちのダイアログが出ていても、/clear の完了を確認できていないことに変わりはないので一時停止します
+  assert.equal(clearPauseNote(before, agent({ sessionId: 's1', pending: [{ reqId: 'r1' }] })), CLEAR_UNCONFIRMED_PAUSE_NOTE);
+  // 新しいセッションが始まっていれば送ってよいので、一時停止しません
+  assert.equal(clearPauseNote(before, agent({ sessionId: 's2' })), null);
+  // エージェントが削除されたか終了した場合は、これまでどおり送信直前の確認で送らずに終えるだけにし、一時停止はしません
+  assert.equal(clearPauseNote(before, undefined), null);
+  assert.equal(clearPauseNote(before, agent({ sessionId: 's1', alive: false })), null);
+});
+
+test('/clear の完了を確認できずに一時停止したキューは、「再開」で同じ項目を /clear からやり直す', () => {
+  const head = item('c1', 'リセット後の指示', { clearFirst: true });
+  const queue = [head, item('x1')];
+  const paused = agent({ queue, queuePaused: true, queueNote: CLEAR_UNCONFIRMED_PAUSE_NOTE });
+  // 「再開」は一時停止を解くだけで、項目は「/clear 付き」のまま先頭に残します（次の自動送信で /clear をもう一度送ります）
+  const r = applyQueueOp(paused, { op: 'resume' });
+  assert.deepEqual(r, { fields: { queue, queuePaused: false, queueNote: '' }, sendNext: false });
+  assert.equal(r.fields.queue[0].clearFirst, true);
+  // 仕分けボードから判断が届いても、TUI の状態を利用者が確かめるまでは一時停止を解きません
+  const added = applyQueueOp(paused, { op: 'add', text: 'A 案で', reply: true, proposal: 'p1' });
+  assert.equal(added.fields.queuePaused, undefined);
+  assert.equal(added.fields.queue[0].reply, true);
+  // 画面には古い判断の扱いを選ぶボタンではなく、通常の「再開」を出します
+  assert.equal(staleHead(paused, undefined), null);
+  assert.equal(staleHead(paused, null), null);
 });
