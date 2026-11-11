@@ -364,7 +364,7 @@ canvas.cat { image-rendering: pixelated; image-rendering: crisp-edges; display: 
 button.icon { padding: 0 6px; font-size: 12px; line-height: 1.6; }
 
 /* ---------- 仕分けボード ---------- */
-.triage-panel { border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); padding: 10px 16px; max-height: 52vh; overflow-y: auto; }
+.triage-panel { border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); padding: 10px 16px; max-height: 60vh; overflow-y: auto; }
 .triage-panel[hidden] { display: none; }
 .triage { display: grid; gap: 8px; }
 .tri-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -421,6 +421,8 @@ button.icon { padding: 0 6px; font-size: 12px; line-height: 1.6; }
 
 @media (max-width: 900px) {
   .tri-cols { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
+  /* 狭い画面では列が 2 段になってボードが縦に長くなるため、会話と入力欄の場所を残すよう低めに抑えます */
+  .triage-panel { max-height: 52vh; }
 }
 
 /* カードの拡大ボタン。カード全体のクリックでも開けますが、開けることが分かるように目印として置きます */
