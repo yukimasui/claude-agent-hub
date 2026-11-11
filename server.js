@@ -31,7 +31,8 @@ import { INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason 
 import * as tmux from './lib/tmux.js';
 import { readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
-import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, sendImage, serveStatic } from './lib/http.js';
+import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, listen, listenErrorMessage, sendImage, serveStatic } from './lib/http.js';
+import { watchDir } from './lib/watch.js';
 
 const store = new Store();
 
@@ -479,7 +480,8 @@ await reconcile();
 // 復元した状態を tmux のステータス行にも反映するにゃ
 for (const a of store.list()) store.changed(a.id);
 
-fs.watch(EVENTS_DIR, (_type, fname) => {
+// 監視が止まっても（フォルダが消された、監視の上限に達したなど）落ちずに張り直します。張り直せない間も下の定期的な読み直しで状態の更新は続きます
+watchDir(EVENTS_DIR, (_type, fname) => {
   if (fname && fname.endsWith('.jsonl')) store.ingest(fname.slice(0, -'.jsonl'.length));
 });
 // fs.watch の取りこぼし対策の保険にゃ
@@ -500,10 +502,18 @@ function shutdown() {
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
 
-server.listen(PORT, HOST, () => {
-  heartbeat();
-  setInterval(heartbeat, 5000);
-  console.log(`Agent Hub: http://localhost:${PORT}`);
-  console.log(`  tmux session : ${TMUX_SESSION}  (tmux attach -t ${TMUX_SESSION})`);
-  console.log(`  data dir     : ${HUB_HOME}`);
-});
+try {
+  await listen(server, PORT, HOST);
+} catch (e) {
+  // ポートが使用中などで待ち受けられない場合は、原因が分かるメッセージを表示して終了します。
+  // 同じデータ置き場で別のハブが動いている場合に、そのハブの心拍ファイルや回答待ちの hook に触れないよう、shutdown は呼びません
+  console.error(`Agent Hub を起動できません: ${listenErrorMessage(e, PORT, HOST)}`);
+  process.exit(1);
+}
+// 待ち受けを始めた後の error（接続の受け付けの失敗など）は、受けないとサーバ全体が落ちるため、記録したうえで動作を続けます
+server.on('error', (e) => console.error('HTTP サーバでエラーが発生しました:', e));
+heartbeat();
+setInterval(heartbeat, 5000);
+console.log(`Agent Hub: http://localhost:${PORT}`);
+console.log(`  tmux session : ${TMUX_SESSION}  (tmux attach -t ${TMUX_SESSION})`);
+console.log(`  data dir     : ${HUB_HOME}`);

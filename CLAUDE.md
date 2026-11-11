@@ -17,7 +17,8 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する。画像は参照だけを項目に持たせ、画像 API の要求時に本体を読み出す（`readTranscriptImage`） |
 | `lib/subagents.js` | サブエージェントの一覧と状態を、親のセッションの `subagents/` にある記録（meta.json と transcript）から組み立てる（`listSubagents`）。サブエージェントの会話の読み出し（`readSubagentTranscript`）もここで行い、`subagents/` の外を読まないよう確かめる |
 | `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成、bracketed paste での送信、キー送信、画面取得） |
-| `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`）、静的ファイルの配信（`serveStatic`。ETag を `staticEtag` で作り、`isNotModified` が一致を判定して 304 を返す） |
+| `lib/watch.js` | フォルダの監視（`fs.watch`）。error やフォルダの削除で監視が止まったら、落ちずに張り直す |
+| `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`）、静的ファイルの配信（`serveStatic`。ETag を `staticEtag` で作り、`isNotModified` が一致を判定して 304 を返す）、待ち受けの開始（`listen`。失敗の理由は `listenErrorMessage` でメッセージにする） |
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |
 | `hooks/summarize.cjs` | ツール入力の 1 行要約（hook とサーバの両方から使う） |
 | `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`app.js` |

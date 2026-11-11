@@ -49,6 +49,9 @@ function writeJsonAtomic(file, data) {
 }
 
 const chunks = [];
+// 標準入力の読み込みに失敗すると（接続が切られた場合など）error が届きます。受けないと処理されない error として
+// 終了コード 1 で落ちるため、受けたうえで何もせず 0 で終わり、エージェントの動作に影響を与えないようにします
+process.stdin.on('error', () => process.exit(0));
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('end', () => {
   let input, ev;
