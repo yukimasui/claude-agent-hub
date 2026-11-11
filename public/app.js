@@ -3,7 +3,7 @@ import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
 import { catAnimationEnabled, catCanvas, coatOf, mountCats, setCatAnimation, updateCat } from './cats.js';
 import { queueSignature, renderQueue } from './queue.js';
-import { findOpenProposals, isDone, openBoard, parseProposals, proposalKey } from './triage.js';
+import { closeBoard, findOpenProposals, isDone, openBoard, parseProposals, proposalKey } from './triage.js';
 import { thumbsHtml } from './images.js';
 import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
 
@@ -312,8 +312,7 @@ let triageKey = null;
 let chatItems = [];
 
 function closeTriage() {
-  $('#triage').hidden = true;
-  $('#triage').innerHTML = '';
+  closeBoard($('#triage'));
   triageKey = null;
 }
 

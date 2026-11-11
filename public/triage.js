@@ -258,12 +258,29 @@ export function viewerHtml(items, id) {
 
 // ---------- ボード ----------
 
+// 描画中のボードの後片付け（大きさの監視を止める処理）を、描画先の要素ごとに持ちます。
+// ボードの中身を消すだけでは ResizeObserver が監視を続け、閉じたボードの要素と監視が残るためです
+const boardCleanups = new WeakMap();
+
+/**
+ * root に描画したボードを閉じます。ボードの外から閉じる場合（表示するエージェントを切り替えたときなど）も、
+ * root の中身を直接消さずにこの関数を使います。
+ */
+export function closeBoard(root) {
+  boardCleanups.get(root)?.();
+  boardCleanups.delete(root);
+  root.hidden = true;
+  root.innerHTML = '';
+}
+
 /**
  * ボードを root に描画します。
  * opts: { key, title, items, onSend(text, mode) => Promise, onClose() }
  * mode は 'now' か 'queue'
  */
 export function openBoard(root, opts) {
+  // 前のボードを閉じずに描き直す場合（別の提案を開いた場合など）も、前のボードの監視を止めます
+  boardCleanups.get(root)?.();
   const all = loadAll();
   const saved = all[opts.key];
   const state = {
@@ -305,6 +322,7 @@ export function openBoard(root, opts) {
   // 列の幅が変わると折り返しが変わって隠れるかどうかも変わるため、描画後に加えて大きさが変わるたびに測り直します
   const markClipped = (el) => el.classList.toggle('clipped', el.scrollHeight > el.clientHeight + 1);
   const clipObserver = typeof ResizeObserver === 'function' ? new ResizeObserver((entries) => entries.forEach((e) => markClipped(e.target))) : null;
+  boardCleanups.set(root, () => clipObserver?.disconnect());
 
   const render = (focusId) => {
     const judged = state.items.filter((it) => it.decision !== 'none').length;
@@ -406,8 +424,7 @@ export function openBoard(root, opts) {
     if (act === 'viewer-close') {
       viewer.close();
     } else if (act === 'close') {
-      root.hidden = true;
-      root.innerHTML = '';
+      closeBoard(root);
       opts.onClose?.();
     } else if (act === 'all-ok') {
       for (const it of state.items) if (it.decision === 'none') it.decision = 'ok';
@@ -426,8 +443,7 @@ export function openBoard(root, opts) {
       try {
         await opts.onSend(composeReply(state), act === 'send' ? 'now' : 'queue');
         markDone(opts.key);
-        root.hidden = true;
-        root.innerHTML = '';
+        closeBoard(root);
       } catch {
         buttons.forEach((b) => (b.disabled = false));
       }
