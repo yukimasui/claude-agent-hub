@@ -134,7 +134,10 @@ function onAgents(list) {
     const next = agents[0]?.id;
     if (next) select(next);
     else {
+      // 保存している選択も消します。残すと、削除済みのエージェントの ID が保存されたままになるためです
       selectedId = null;
+      save('selectedId', null);
+      setSelectedSub(null);
       $('#chat').innerHTML = '';
       $('#term').textContent = '';
       closeTriage();
