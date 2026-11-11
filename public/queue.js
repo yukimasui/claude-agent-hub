@@ -1,5 +1,5 @@
-// タスクキューのパネルにゃ。
-// 並べ替え（ドラッグ＆ドロップ / ↑↓）、編集、/clear の切り替え、削除、一時停止・再開ができるにゃ
+// タスクキューのパネルです。
+// 並べ替え（ドラッグ＆ドロップ / ↑↓）、編集、/clear の切り替え、削除、一時停止・再開ができます
 import { esc } from './md.js';
 
 // 先頭の判断が古くなったためにキューを一時停止したときの理由（queueNote）です。
@@ -92,8 +92,8 @@ function resumeButtons(agent, openKey) {
 }
 
 /**
- * root にキューを描画するにゃ。
- * op(body) はサーバの queue 操作を呼ぶ関数（Promise）にゃ
+ * root にキューを描画します。
+ * op(body) はサーバの queue 操作を呼ぶ関数（Promise）です
  * openKey は判断待ちの提案の proposalKey です（replyMark を参照してください）
  */
 export function renderQueue(root, agent, op, openKey) {
@@ -200,7 +200,7 @@ export function renderQueue(root, agent, op, openKey) {
     if (li && e.target.closest('.qi-text')) startEdit(li);
   };
 
-  // ドラッグで並べ替えるにゃ
+  // ドラッグで並べ替えます
   let dragId = null;
   root.ondragstart = (e) => {
     const li = e.target.closest?.('.queue-item');

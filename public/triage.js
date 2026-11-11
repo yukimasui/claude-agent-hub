@@ -1,6 +1,6 @@
-// 提案の仕分けボードにゃ。
+// 提案の仕分けボードです。
 // Claude が出した提案をカードにして、ドラッグ＆ドロップ（またはボタン）で
-// 「採用 / 却下 / 修正して実施」に振り分け、まとめて返信するにゃ
+// 「採用 / 却下 / 修正して実施」に振り分け、まとめて返信します
 import { esc, hydrate, inline, renderMarkdown } from './md.js';
 
 export const DECISIONS = [
@@ -115,7 +115,7 @@ export function proposalKey(it) {
   return `${it.ts}|${hashText(String(it.text ?? ''))}`;
 }
 
-/** 本文のトップレベルの箇条書き・番号付きリストを項目として取り出すにゃ */
+/** 本文のトップレベルの箇条書き・番号付きリストを項目として取り出します */
 export function extractListItems(text) {
   const lines = String(text || '')
     .replace(/```[\s\S]*?```/g, '')
@@ -145,7 +145,7 @@ function loadAll() {
 }
 function saveAll(all) {
   try {
-    // 古いものから捨てて肥大化を防ぐにゃ
+    // 古いものから捨てて肥大化を防ぎます
     const keys = Object.keys(all);
     for (const k of keys.slice(0, Math.max(0, keys.length - 100))) delete all[k];
     localStorage.setItem(STORE_KEY, JSON.stringify(all));
@@ -259,7 +259,7 @@ export function viewerHtml(items, id) {
 // ---------- ボード ----------
 
 /**
- * ボードを root に描画するにゃ。
+ * ボードを root に描画します。
  * opts: { key, title, items, onSend(text, mode) => Promise, onClose() }
  * mode は 'now' か 'queue'
  */
@@ -381,7 +381,7 @@ export function openBoard(root, opts) {
     if (to === 'change') root.querySelector(`.tri-card[data-id="${CSS.escape(id)}"] .tri-note`)?.focus();
   };
 
-  // ---- イベント（root に一度だけ登録するにゃ） ----
+  // ---- イベント（root に一度だけ登録します） ----
   root.onclick = async (e) => {
     // ダイアログの外側（背景）を押したときは、イベントの対象がダイアログ自身になります。
     // 本文の文字を選択しながら背景で離した場合も、押した位置と離した位置の共通の祖先であるダイアログが対象になるため、
@@ -470,7 +470,7 @@ export function openBoard(root, opts) {
       move(card.dataset.id, to);
     }
   };
-  // ドラッグ＆ドロップにゃ
+  // ドラッグ＆ドロップです
   root.ondragstart = (e) => {
     const card = e.target.closest?.('.tri-card');
     if (!card) return;

@@ -508,7 +508,7 @@ test('readTranscriptImage は参照が指す画像を、中身から判定した
 
 test('readTranscriptImage は対応しない形式や偽装した画像を返さない', () => {
   const file = write([
-    // 宣言は PNG だが中身は SVG（スクリプトを含む）
+    // 宣言は PNG で、中身は SVG のもの（スクリプトを含む）
     ...readImageLines('toolu_svg', SVG, 'image/png'),
     // 宣言が SVG のもの
     user([image(SVG, 'image/svg+xml')], { uuid: 'u-svg' }),

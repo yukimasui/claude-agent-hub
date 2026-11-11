@@ -8,7 +8,7 @@ const block = (body) => `前置きの説明\n\`\`\`proposals\n${body}\n\`\`\`\n�
 
 test('proposals ブロックの JSON から見出しと項目を取り出す', () => {
   const r = parseProposals(block('{"title":"改善案","items":[{"id":1,"title":" A "},{"title":""},{"summary":"B","description":"説明"}]}'));
-  // id は文字列にそろえ、タイトルが空の項目は捨てる。id が無い項目は位置から番号を振る
+  // id は文字列にそろえ、タイトルが空の項目は捨てます。id が無い項目は位置から番号を振ります
   assert.deepEqual(r, {
     title: '改善案',
     items: [
@@ -39,7 +39,7 @@ test('ブロックが無い、または項目が無ければ null を返す', ()
 });
 
 test('補足にコードブロックがあっても、ブロック全体を提案として読み取る', () => {
-  // JSON の文字列の中にある区切り（バッククォート 3 つ）でブロックを切ると、JSON が途中で切れて提案を読み取れなくなるため
+  // JSON の文字列の中にある区切り（バッククォート 3 つ）でブロックを切ると、JSON が途中で切れて提案を読み取れなくなるためです
   const items = [
     { id: '1', title: '手順を載せる', detail: '例:\n```bash\nnpm test\n```\nを追記する' },
     { id: '2', title: '図を入れる', detail: '' },
@@ -51,10 +51,10 @@ test('補足にコードブロックがあっても、ブロック全体を提�
       { id: '2', title: '図を入れる', detail: '' },
     ],
   };
-  // 1 行の JSON と、整形した複数行の JSON のどちらでも読み取れる
+  // 1 行の JSON と、整形した複数行の JSON のどちらでも読み取れます
   assert.deepEqual(parseProposals(block(JSON.stringify({ title: '改善案', items }))), expected);
   assert.deepEqual(parseProposals(block(JSON.stringify({ title: '改善案', items }, null, 2))), expected);
-  // 後に別のブロックが続いても、最初のブロックの範囲で読み取る
+  // 後に別のブロックが続いても、最初のブロックの範囲で読み取ります
   const twice = `${block(JSON.stringify({ title: '改善案', items }))}\n${block('[{"title":"別の案"}]')}`;
   assert.deepEqual(parseProposals(twice), expected);
 });
@@ -151,7 +151,7 @@ test('proposalKey は同じ応答に同じ値を、時刻か本文が異なる�
 });
 
 test('ブロックの外にある箇条書きは提案として扱わない', () => {
-  // 情報提供のための箇条書きを判断項目にしないため、仕分けはブロックがある応答だけを対象にする
+  // 情報提供のための箇条書きを判断項目にしないため、仕分けはブロックがある応答だけを対象にします
   assert.equal(parseProposals('方法は次のとおりです。\n- FTP で送る\n- 共有フォルダを使う\n1. 申請する\n2. 手入力する'), null);
 });
 
@@ -217,12 +217,12 @@ test('viewerHtml は補足を Markdown として描画し、位置と判断済�
   assert.match(html, /data-id="2" data-decision="none"/);
   assert.match(html, /提案 2 \/ 3/);
   assert.match(html, /3件中 2件を判断済み/);
-  // 見出しのインライン装飾と、補足の箇条書き・コードが HTML になる
+  // 見出しのインライン装飾と、補足の箇条書き・コードが HTML になります
   assert.match(html, /<strong>手順<\/strong>を追加/);
   assert.match(html, /<ul><li>初めての人が迷う<\/li><li><code>npm run dev<\/code> を載せる<\/li><\/ul>/);
-  // 中ほどの提案では前後どちらにも移動できる
+  // 中ほどの提案では前後どちらにも移動できます
   assert.doesNotMatch(html, /data-nav="-?1"[^>]*disabled/);
-  // 未判断の提案では修正内容の入力欄を出さず、未判断のボタンだけが押された状態になる
+  // 未判断の提案では修正内容の入力欄を出さず、未判断のボタンだけが押された状態になります
   assert.doesNotMatch(html, /tri-note/);
   assert.match(html, /data-to="none" aria-pressed="true"/);
   assert.match(html, /data-to="ok" aria-pressed="false"/);
@@ -234,7 +234,7 @@ test('viewerHtml は「修正して実施」の提案に修正内容の入力欄
   assert.match(html, /data-to="change" aria-pressed="true"/);
   assert.doesNotMatch(html, /<script>/);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
-  // 最後の提案では「次へ」を押せない
+  // 最後の提案では「次へ」を押せません
   assert.match(html, /data-nav="1"[^>]*disabled/);
   assert.doesNotMatch(html, /data-nav="-1"[^>]*disabled/);
 });

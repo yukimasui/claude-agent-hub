@@ -1,5 +1,5 @@
-// 依存なしの軽量 Markdown レンダラにゃ。
-// 見出し・リスト（入れ子・タスク）・表・引用・水平線・コードブロック・インライン装飾・リンクに対応するにゃ。
+// 依存なしの軽量 Markdown レンダラです。
+// 見出し・リスト（入れ子・タスク）・表・引用・水平線・コードブロック・インライン装飾・リンクに対応します。
 // ```mermaid は同梱の mermaid（public/vendor/mermaid/）を遅延読み込みして図にします（読み込めない場合はコードのまま表示します）。
 
 export const esc = (s) =>
@@ -11,7 +11,7 @@ const HR_RE = /^\s{0,3}([-*_])(\s*\1){2,}\s*$/;
 const HEADING_RE = /^\s{0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 const TABLE_SEP_RE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
 
-/** インライン装飾にゃ */
+/** インライン装飾です */
 export function inline(src) {
   const codes = [];
   let t = esc(src).replace(/`([^`\n]+)`/g, (_, c) => {
@@ -93,7 +93,7 @@ function parseList(lines, i) {
       break;
     }
     if (!m) {
-      // インデントされた継続行にゃ
+      // インデントされた継続行です
       if (open && /^\s+/.test(line) && !isBlockStart(lines, i)) {
         html = html.replace(/<\/li>$/, `<br>${inline(line.trim())}</li>`);
         i++;
@@ -102,7 +102,7 @@ function parseList(lines, i) {
       break;
     }
     if (m[1].length < indent) break;
-    // 同じ深さで番号付き／箇条書きが切り替わったら別リストにゃ
+    // 同じ深さで番号付き／箇条書きが切り替わったら別リストにします
     if (m[1].length === indent && /\d/.test(m[2]) !== ordered) break;
     if (m[1].length > indent && open) {
       const r = parseList(lines, i);
@@ -120,7 +120,7 @@ function parseList(lines, i) {
   return { html: html + (ordered ? '</ol>' : '</ul>'), i };
 }
 
-/** ブロック単位の Markdown を HTML にするにゃ */
+/** ブロック単位の Markdown を HTML にします */
 export function renderMarkdown(src) {
   const lines = String(src ?? '').replace(/\r\n?/g, '\n').split('\n');
   let html = '';
@@ -241,7 +241,7 @@ const loadMermaid = retryingLoader(() =>
   }),
 );
 
-/** 描画後に mermaid ブロックを図へ置き換えるにゃ */
+/** 描画後に mermaid ブロックを図へ置き換えます */
 export async function hydrate(root) {
   const blocks = [...root.querySelectorAll('.mermaid-block:not([data-done])')];
   if (!blocks.length) return;

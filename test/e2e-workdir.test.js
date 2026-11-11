@@ -162,7 +162,7 @@ test('ロックは持ち主だけが外せる', (t) => {
   assert.ok(fs.existsSync(path.join(dir, LOCK)));
   releaseLock(dir);
   assert.ok(!fs.existsSync(path.join(dir, LOCK)));
-  releaseLock(dir); // ロックがなくても例外にならない
+  releaseLock(dir); // ロックがなくても例外になりません
 });
 
 test('PID の判定は 0 や負の値をプロセスグループとして扱わない', () => {

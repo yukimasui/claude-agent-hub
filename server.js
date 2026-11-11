@@ -1,4 +1,4 @@
-// Agent Hub サーバにゃ。外部依存なしの Node 標準モジュールだけで動くにゃ
+// Agent Hub のサーバです。外部依存なしの Node 標準モジュールだけで動きます
 import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -40,7 +40,7 @@ const store = new Store();
 
 const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
-/** --settings で渡す hook 設定を生成するにゃ。グローバル設定は汚さないにゃ */
+/** --settings で渡す hook 設定を生成します。グローバル設定は汚しません */
 function writeHooksFile() {
   fs.mkdirSync(HUB_HOME, { recursive: true });
   const command = `${shq(process.execPath)} ${shq(HOOK_SCRIPT)}`;
@@ -78,9 +78,9 @@ function resolveDir(p) {
 
 // ---------- エージェント操作 ----------
 
-// 空文字はユーザー設定に従う（フラグを渡さない）にゃ
+// 空文字はユーザー設定に従います（フラグを渡しません）
 const PERMISSION_MODES = new Set(['manual', 'acceptEdits', 'auto', 'plan']);
-// ステータス表示の猫の毛色にゃ（空文字はおまかせ）
+// ステータス表示の猫の毛色です（空文字はおまかせ）
 const COATS = new Set(['orange', 'gray', 'cream', 'siamese', 'black', 'calico']);
 
 async function createAgent(body) {
@@ -112,7 +112,7 @@ async function createAgent(body) {
 }
 
 async function restartAgent(a) {
-  // 会話が始まっていれば resume、まだなら新しいセッションで起動するにゃ
+  // 会話が始まっていれば resume、まだなら新しいセッションで起動します
   // processStartedAt は、前のプロセスで止まったサブエージェントを「中断」と判定するために更新します（SessionStart が届けば上書きされます）
   const resume = !!(a.transcriptPath && fs.existsSync(a.transcriptPath));
   if (!resume) a.sessionId = randomUUID();
@@ -139,7 +139,7 @@ async function deleteAgent(a) {
 
 // ---------- 監視ループ ----------
 
-// tmux のステータス行にも状態を反映するにゃ
+// tmux のステータス行にも状態を反映します
 const tmuxState = new Map();
 store.on('change', (id) => {
   const a = store.get(id);
@@ -198,9 +198,9 @@ function writeResponse(reqId, data) {
   fs.renameSync(tmp, resFile(reqId));
 }
 
-// 別経路（ターミナルなど）で解決された要求は、待っている hook を終わらせるにゃ
+// 別経路（ターミナルなど）で解決された要求は、待っている hook を終わらせます
 store.on('cancel', (reqId, reason) => {
-  if (!reason) return; // hook 自身が終了を報告した場合にゃ
+  if (!reason) return; // hook 自身が終了を報告した場合です
   const req = store.loadRequest(reqId);
   if (req && pidAlive(req.hookPid)) writeResponse(reqId, { result: reason, output: null });
   else fs.rmSync(reqFile(reqId), { force: true });
@@ -221,7 +221,7 @@ function respond(a, body) {
   }
   const out = buildOutput(req, body);
   writeResponse(p.reqId, out);
-  // hook の InteractionDone を待たずに画面から消すにゃ
+  // hook の InteractionDone を待たずに画面から消します
   store.dropPending(a, (x) => x === p, null);
   if (out.output) store.patch(a.id, { activity: '回答を送信しました' });
   else if (!a.pending.length) store.patch(a.id, { state: 'waiting', activity: 'ターミナルでの回答待ち', stateSince: Date.now() });
@@ -234,11 +234,11 @@ function heartbeat() {
   } catch {}
 }
 
-// プロセスが死んだペインを検出するにゃ（hook では拾えないクラッシュ対策にゃ）
+// プロセスが死んだペインを検出します（hook では拾えないクラッシュへの対策です）
 async function reconcile() {
   const panes = await tmux.listPanes();
   for (const a of store.list()) {
-    // hook が居なくなった要求は取り下げるにゃ
+    // hook が居なくなった要求は取り下げます
     if (a.pending.some((p) => !pidAlive(p.hookPid))) {
       store.dropPending(a, (p) => !pidAlive(p.hookPid), 'stale');
       store.changed(a.id);
@@ -283,7 +283,7 @@ function readyForNext(a) {
   return a && a.alive && a.queue.length && !a.pending.length && (a.state === 'done' || a.state === 'idle') && !dispatching.has(a.id);
 }
 
-// 状態が変わるたびに、少し待ってから次のタスクを送れるか確認するにゃ
+// 状態が変わるたびに、少し待ってから次のタスクを送れるか確認します
 store.on('change', (id) => {
   const a = store.get(id);
   if (!a || a.queuePaused || !readyForNext(a)) return;
@@ -306,7 +306,7 @@ async function dispatchNext(id, { force = false } = {}) {
     if (item.clearFirst) {
       const before = a.lastEventAt;
       await tmux.sendText(a.paneId, '/clear');
-      // /clear で SessionStart が届くのを待つにゃ
+      // /clear で SessionStart が届くのを待ちます
       for (let i = 0; i < 40 && store.get(id)?.lastEventAt === before; i++) await sleep(150);
       await sleep(400);
     }
@@ -437,9 +437,9 @@ async function api(req, res, url) {
     case 'keys': {
       if (!a.alive) throw httpError(409, 'エージェントは停止しています');
       await tmux.sendKey(a.paneId, String(body.key));
-      // 実行中の Esc / Ctrl+C は中断扱いにするにゃ（中断では Stop hook が来ないため）
+      // 実行中の Esc / Ctrl+C は中断扱いにします（中断では Stop hook が来ないため）
       if ((body.key === 'Escape' || body.key === 'C-c') && a.state === 'running') {
-        // 中断した直後に次のキューが流れないよう一時停止もするにゃ
+        // 中断した直後に次のキューが流れないよう一時停止もします
         const paused = a.queue.length ? { queuePaused: true, queueNote: INTERRUPT_PAUSE_NOTE } : {};
         store.patch(a.id, { state: 'idle', activity: '中断しました', stateSince: Date.now(), ...paused });
       }
@@ -477,14 +477,14 @@ const server = http.createServer(async (req, res) => {
 writeHooksFile();
 store.init();
 await reconcile();
-// 復元した状態を tmux のステータス行にも反映するにゃ
+// 復元した状態を tmux のステータス行にも反映します
 for (const a of store.list()) store.changed(a.id);
 
 // 監視が止まっても（フォルダが消された、監視の上限に達したなど）落ちずに張り直します。張り直せない間も下の定期的な読み直しで状態の更新は続きます
 watchDir(EVENTS_DIR, (_type, fname) => {
   if (fname && fname.endsWith('.jsonl')) store.ingest(fname.slice(0, -'.jsonl'.length));
 });
-// fs.watch の取りこぼし対策の保険にゃ
+// fs.watch の取りこぼし対策の保険です
 setInterval(() => store.list().forEach((a) => store.ingest(a.id)), 1500);
 setInterval(() => reconcile().catch(() => {}), 2000);
 // プロセスが終了したエージェントのサブエージェントは記録が増えないため、完了通知を読み終えていれば定期的な確認を省きます
@@ -493,7 +493,7 @@ setInterval(() => {
   for (const a of store.list()) if (a.alive || !notificationsCaughtUp(a.transcriptPath)) refreshSubagents(a.id);
 }, 3000);
 
-// 終了時は待機中の hook をすべて解放して TUI に任せるにゃ
+// 終了時は待機中の hook をすべて解放して TUI に任せます
 function shutdown() {
   for (const a of store.list()) store.dropPending(a, () => true, 'server-stopped');
   fs.rmSync(HEARTBEAT_FILE, { force: true });

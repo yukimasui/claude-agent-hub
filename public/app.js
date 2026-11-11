@@ -1,4 +1,4 @@
-// Agent Hub フロントエンドにゃ
+// Agent Hub のフロントエンドです
 import { esc, hydrate, renderMarkdown } from './md.js';
 import { mountPending, planHistory, questionHistory, todosHistory } from './cards.js';
 import { catAnimationEnabled, catCanvas, coatOf, mountCats, setCatAnimation, updateCat } from './cats.js';
@@ -112,7 +112,7 @@ function onAgents(list) {
       }
     }
     prevStates.set(a.id, a.state);
-    // 新しい対話要求は個別に通知するにゃ
+    // 新しい対話要求は個別に通知します
     for (const p of a.pending) {
       if (seenPending.has(p.reqId)) continue;
       seenPending.add(p.reqId);
@@ -258,7 +258,7 @@ function renderDetail() {
   $('#d-meta').textContent = `${a.model}${mode} · ${a.cwd} · ${a.sessionId?.slice(0, 8) ?? ''}`;
   $('#d-meta').title = `${a.cwd}\nsession: ${a.sessionId}`;
   const since = a.state === 'running' ? a.turnStartedAt : a.stateSince;
-  // ステータス行の要素は作り直さずに中身だけ更新するにゃ（猫の動きが途切れないように）
+  // ステータス行の要素は作り直さずに中身だけ更新します（猫の動きが途切れないように）
   updateCat($('#d-cat canvas'), { seed: a.id, coat: a.coat, state: a.state, activity: a.activity, since: a.stateSince });
   $('#d-badge').className = `badge st-${a.state}`;
   $('#d-badge').textContent = STATE_LABEL[a.state] || a.state;
@@ -286,7 +286,7 @@ function syncQueue(a) {
   // 「分からない」（undefined）と「判断待ちの提案がない」（null）の変化でも描き直すよう、判定の値は queueSignature で組み立てます
   const sig = queueSignature(a, openKey);
   if (sig === queueSig) return;
-  // 編集中は描き直さないにゃ（次の更新で反映するにゃ）
+  // 編集中は描き直しません（次の更新で反映します）
   if (root.querySelector('textarea:focus') || root.querySelector('.queue-item.dragging')) return;
   queueSig = sig;
   if (!a) {
@@ -351,7 +351,7 @@ function openTriageFor(it, auto) {
   });
 }
 
-/** 最後の応答に未回答の proposals ブロックがあれば自動で開くにゃ */
+/** 最後の応答に未回答の proposals ブロックがあれば自動で開きます */
 function autoTriage(items) {
   // サーバがキューを一時停止する判定（lib/queue.js の proposalPauseNote）と同じ関数を使います
   const it = findOpenProposals(items);
@@ -368,7 +368,7 @@ async function syncPending() {
   pendingSig = sig;
   const root = $('#pending');
   if (!a || !a.pending.length) {
-    // 回答し終えたら会話の最新部分を見せるにゃ
+    // 回答し終えたら会話の最新部分を見せます
     if (!root.hidden) forceScroll = true;
     root.innerHTML = '';
     root.hidden = true;
@@ -376,7 +376,7 @@ async function syncPending() {
   }
   try {
     const { items } = await api('GET', `/api/agents/${a.id}/pending`);
-    if (pendingSig !== sig) return; // 取得中に状況が変わったにゃ
+    if (pendingSig !== sig) return; // 取得中に状況が変わった場合です
     mountPending(
       root,
       items,
@@ -435,7 +435,7 @@ function renderChat(items) {
     el.innerHTML = '<div class="placeholder">まだ会話がありません。</div>';
     return;
   }
-  // 再描画で開閉状態が失われないよう覚えておくにゃ
+  // 再描画で開閉状態が失われないよう覚えておきます
   const openState = new Map([...el.querySelectorAll('details[data-key]')].map((d) => [d.dataset.key, d.open]));
 
   let html = '';
@@ -550,7 +550,7 @@ function setTab(t) {
 }
 
 /**
- * 今すぐ送るかキューに積むにゃ。ダイアログ表示中はサーバが送信を拒否するにゃ。
+ * 今すぐ送るかキューに積みます。ダイアログ表示中はサーバが送信を拒否します。
  * proposal は仕分けボードからの判断のときに、対象の提案の proposalKey を渡します。
  * サーバは判断としてキューの先頭に入れて提案による一時停止を解除し、送る前に対象の提案がまだ判断待ちかを照合します。
  */
@@ -633,7 +633,7 @@ for (const b of document.querySelectorAll('[data-key]')) b.addEventListener('cli
 $('#btn-send').addEventListener('click', () => submit('now'));
 $('#btn-queue').addEventListener('click', () => submit('queue'));
 $('#input').addEventListener('keydown', (e) => {
-  // IME 変換確定の Enter では送信しないにゃ
+  // IME 変換確定の Enter では送信しません
   if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
     e.preventDefault();
     submit(e.ctrlKey || e.metaKey ? 'queue' : 'now');
@@ -701,7 +701,7 @@ $('#dlg-new').addEventListener('close', async () => {
     const a = await api('POST', '/api/agents', body);
     selectedId = a.id;
     save('selectedId', a.id);
-    // 起動直後は信頼確認などが出ることがあるのでターミナルを見せるにゃ
+    // 起動直後は信頼確認などが出ることがあるのでターミナルを見せます
     setTab('term');
   } catch (e) {
     toast(e.message);
@@ -751,7 +751,7 @@ setInterval(() => {
 }, 1000);
 setInterval(pollScreen, 800);
 
-// ステータス行の帯と空画面の猫を用意するにゃ
+// ステータス行の帯と空画面の猫を用意します
 $('#d-cat').innerHTML = catCanvas({ seed: '', state: 'idle', w: 64, h: 16, scale: 2 });
 $('#empty-cat').innerHTML = catCanvas({ seed: 'hub', coat: 'orange', state: 'idle', since: 1, scale: 4 });
 mountCats($('#empty'));

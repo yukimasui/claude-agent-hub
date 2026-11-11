@@ -60,7 +60,7 @@ test('質問への回答は answers と annotations を updatedInput に入れ�
       updatedInput: {
         ...questionReq.tool_input,
         answers: { '好きな言語は？': 'Rust', '使うツールは？': 'git, tmux' },
-        // 空のメモは送らない
+        // 空のメモは送りません
         annotations: { '好きな言語は？': { notes: 'メモです' }, '使うツールは？': { preview: '図' } },
       },
     }),
@@ -98,7 +98,7 @@ test('計画の承認は updatedInput を添え、指定されたモードへの
     out.output,
     perm({ behavior: 'allow', updatedInput: planReq.tool_input, updatedPermissions: [{ type: 'setMode', mode: 'acceptEdits', destination: 'session' }] }),
   );
-  // 想定外のモードは無視して、モードを変えずに承認する
+  // 想定外のモードは無視して、モードを変えずに承認します
   const plain = buildOutput(planReq, { action: 'approve', mode: 'bypassPermissions' });
   assert.deepEqual(plain.output, perm({ behavior: 'allow', updatedInput: planReq.tool_input }));
 });
@@ -112,7 +112,7 @@ test('権限の「許可して記憶」は選ばれた提案ルールだけを�
   const req = { tool_name: 'Bash', permission_suggestions: [{ type: 'addRules', rules: ['a'] }, { type: 'addRules', rules: ['b'] }] };
   assert.deepEqual(buildOutput(req, { action: 'allow' }).output, perm({ behavior: 'allow' }));
   assert.deepEqual(buildOutput(req, { action: 'allowAlways', suggestions: [1, 5] }).output, perm({ behavior: 'allow', updatedPermissions: [req.permission_suggestions[1]] }));
-  // 指定が無ければすべての提案を採用する
+  // 指定が無ければすべての提案を採用します
   assert.deepEqual(buildOutput(req, { action: 'allowAlways' }).output, perm({ behavior: 'allow', updatedPermissions: req.permission_suggestions }));
   assert.deepEqual(buildOutput({ tool_name: 'Bash' }, { action: 'allowAlways' }).output, perm({ behavior: 'allow' }));
 });

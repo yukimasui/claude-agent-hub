@@ -278,7 +278,7 @@ details.pv summary { font-size: 11px; color: var(--accent); cursor: pointer; }
   .q-body.with-preview { grid-template-columns: 1fr; }
 }
 
-/* レイアウト調整: 回答待ちがあっても会話を一定量見せ、操作ボタンは常に見えるようにするにゃ */
+/* レイアウト調整: 回答待ちがあっても会話を一定量見せ、操作ボタンは常に見えるようにします */
 .chat { min-height: 160px; }
 .pending { max-height: 55vh; }
 .icard-actions { position: sticky; bottom: -10px; background: var(--panel); border-radius: 0 0 10px 10px; z-index: 1; }
@@ -364,7 +364,7 @@ canvas.cat { image-rendering: pixelated; image-rendering: crisp-edges; display: 
 button.icon { padding: 0 6px; font-size: 12px; line-height: 1.6; }
 
 /* ---------- 仕分けボード ---------- */
-.triage-panel { border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); padding: 10px 16px; max-height: 60vh; overflow-y: auto; }
+.triage-panel { border-top: 2px solid var(--accent); background: color-mix(in srgb, var(--accent) 4%, var(--bg)); padding: 10px 16px; max-height: 52vh; overflow-y: auto; }
 .triage-panel[hidden] { display: none; }
 .triage { display: grid; gap: 8px; }
 .tri-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -422,7 +422,6 @@ button.icon { padding: 0 6px; font-size: 12px; line-height: 1.6; }
 @media (max-width: 900px) {
   .tri-cols { grid-template-columns: repeat(2, minmax(150px, 1fr)); }
 }
-.triage-panel { max-height: 52vh; }
 
 /* カードの拡大ボタン。カード全体のクリックでも開けますが、開けることが分かるように目印として置きます */
 .tri-expand { background: none; border: none; padding: 0 2px; color: var(--muted); font-size: 13px; line-height: 1.2; align-self: start; opacity: 0.55; }

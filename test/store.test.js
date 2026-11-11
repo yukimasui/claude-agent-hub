@@ -84,7 +84,7 @@ test('権限確認は要対応になり、ターミナルで先に解決され�
   assert.equal(a.pending[0].kind, 'permission');
   assert.equal(a.activity, '許可待ち: Bash');
 
-  // 要求が残っている間は PreToolUse で実行中に戻さない
+  // 要求が残っている間は PreToolUse で実行中に戻しません
   a = emit({ event: 'PreToolUse', tool: 'Bash', tool_summary: 'date', input_hash: 'h1' });
   assert.equal(a.state, 'waiting');
 
@@ -195,7 +195,7 @@ test('Notification は種類に応じて要対応・完了に振り分ける', (
   let a = emit({ event: 'Notification', notification_type: 'permission_prompt', message: 'Claude needs your permission' });
   assert.equal(a.state, 'waiting');
   assert.equal(a.activity, 'Claude needs your permission');
-  // 要対応のままなら idle_prompt では完了にしない
+  // 要対応のままなら idle_prompt では完了にしません
   a = emit({ event: 'Notification', notification_type: 'idle_prompt' });
   assert.equal(a.state, 'waiting');
 

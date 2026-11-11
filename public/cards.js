@@ -1,6 +1,6 @@
-// 対話カードにゃ。
-// - 回答待ちカード（質問 / 計画承認 / 権限確認 / MCP 入力要求）: ブラウザから回答できるにゃ
-// - 履歴カード（質問と回答 / 計画 / TODO）: 会話タブに表示するにゃ
+// 対話カードです。
+// - 回答待ちカード（質問 / 計画承認 / 権限確認 / MCP 入力要求）: ブラウザから回答できます
+// - 履歴カード（質問と回答 / 計画 / TODO）: 会話タブに表示します
 import { esc, inline, renderMarkdown } from './md.js';
 
 // ---------- 共通 ----------
@@ -112,7 +112,7 @@ function wireQuestion(card, item, respond) {
       for (const opt of sec.querySelectorAll('.opt')) opt.classList.toggle('checked', opt.querySelector('input').checked);
     }
   };
-  // 初期プレビューは最初の選択肢のものにゃ
+  // 初期プレビューは最初の選択肢のものです
   for (const sec of card.querySelectorAll('.q')) {
     const q = qs[Number(sec.dataset.qi)];
     showPreview(sec, q.options?.find((o) => o.preview)?.preview);
@@ -151,7 +151,7 @@ function wireQuestion(card, item, respond) {
       refresh();
     }
   });
-  // 数字キーで現在の質問の選択肢を選ぶにゃ（文字入力中は無効）
+  // 数字キーで現在の質問の選択肢を選びます（文字入力中は無効）
   card.addEventListener('keydown', (e) => {
     if (e.target.matches('input[type=text], textarea') || e.altKey || e.ctrlKey || e.metaKey) return;
     if (!/^[1-9]$/.test(e.key)) return;
@@ -369,7 +369,7 @@ function fieldHtml(name, schema, required) {
           `<label class="inline-check"><input type="checkbox" data-field="${esc(name)}" data-type="array" value="${esc(JSON.stringify(c.value))}"${Array.isArray(def) && def.includes(c.value) ? ' checked' : ''}> ${esc(c.title)}</label>`,
       )
       .join('');
-    // チェックボックス群は label の入れ子にならないよう div で包むにゃ
+    // チェックボックス群は label の入れ子にならないよう div で包みます
     return `<div class="field"><span>${label}</span><div>${control}</div>${desc}</div>`;
   } else if (choices) {
     control = `<select data-field="${esc(name)}" data-type="enum">${required ? '' : '<option value="">（未選択）</option>'}${choices
@@ -443,8 +443,8 @@ const RENDER = {
 };
 
 /**
- * 回答待ちカードを描画するにゃ。
- * respond(reqId, body) は Promise を返す関数で、失敗時は例外を投げるにゃ
+ * 回答待ちカードを描画します。
+ * respond(reqId, body) は Promise を返す関数で、失敗時は例外を投げます
  */
 export function mountPending(root, items, respond, onError) {
   root.innerHTML = items.map((it) => (RENDER[it.kind] || RENDER.permission)[0](it)).join('');
@@ -484,7 +484,7 @@ export function questionHistory(it) {
   const replied = it.status === 'rejected' && /^ユーザーは選択肢を選ばずに/.test(it.resultText || '');
   const status = it.status === 'answered' ? '回答済み' : replied ? '返信' : it.status === 'rejected' ? '未回答で終了' : '回答待ち';
   if (it.status === 'pending') {
-    // 回答待ちの間は下のパネルで回答するので、履歴側は簡略表示にするにゃ
+    // 回答待ちの間は下のパネルで回答するので、履歴側は簡略表示にします
     return `<div class="hcard hcard-question hcard-compact">
       <div class="hcard-head"><span class="badge st-waiting">${status}</span> 質問（下のパネルで回答できます）</div>
       ${(it.questions || []).map((q) => `<div class="q-text">・${inline(q.question)}</div>`).join('')}
@@ -504,7 +504,7 @@ export function questionHistory(it) {
           }</span></li>`;
         })
         .join('');
-      // 回答が単一文字列で選択肢と一致しない場合は自由記述とみなすにゃ（カンマを含む自由記述にも対応）
+      // 回答が単一文字列で選択肢と一致しない場合は自由記述とみなします（カンマを含む自由記述にも対応）
       const free = ans != null && !q.multiSelect && !labels.has(String(ans)) ? String(ans) : otherVals.join(', ');
       const notes = it.annotations?.[q.question]?.notes;
       return `<div class="hq">

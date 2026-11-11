@@ -1,6 +1,6 @@
-// ドット絵の猫でエージェントの状態を表すにゃ。
-// スプライトは文字列で定義して、毛色ごとにオフスクリーン canvas へ焼き込んでから拡大描画するにゃ。
-// アニメーションは全体共通の tick から計算するので、DOM を作り直しても動きが途切れないにゃ。
+// ドット絵の猫でエージェントの状態を表します。
+// スプライトは文字列で定義して、毛色ごとにオフスクリーン canvas へ焼き込んでから拡大描画します。
+// アニメーションは全体共通の tick から計算するので、DOM を作り直しても動きが途切れません。
 //
 // 文字の意味: . 透明 / B 地の色 / S 縞・ポイント / W 白 / K 目 / L 閉じた目などの線 / P 鼻・口 / R 強調(赤) / A アクセント / Z 吹き出し文字
 
@@ -17,7 +17,7 @@ export const COATS = {
 const COAT_KEYS = Object.keys(COATS);
 const FX = { R: '#ff5d6c', A: '#7aa2f7', Z: '#c8d3f5' };
 
-/** id から毛色を決めるにゃ（指定があればそれを使うにゃ） */
+/** id から毛色を決めます（指定があればそれを使います） */
 export function coatOf(id, preferred) {
   if (preferred && COATS[preferred]) return preferred;
   let h = 0;
@@ -27,7 +27,7 @@ export function coatOf(id, preferred) {
 
 // ---------- スプライト ----------
 
-/** 文字列スプライトに差分を当てた新しいスプライトを返すにゃ */
+/** 文字列スプライトに差分を当てた新しいスプライトを返します */
 function patch(rows, changes) {
   const g = rows.map((r) => r.split(''));
   for (const [x, y, c] of changes) if (g[y] && x >= 0 && x < g[y].length) g[y][x] = c;
@@ -51,7 +51,7 @@ const SIT = [
   '.BBBWWBWWBBB..',
   '..BBWWBWWBB...',
 ];
-// しっぽ（右側で揺れるにゃ）
+// しっぽ（右側で揺れます）
 const TAILS = [
   [[12, 13, 'B'], [13, 12, 'B'], [13, 11, 'B'], [13, 10, 'S'], [12, 9, 'S']],
   [[12, 13, 'B'], [13, 13, 'B'], [13, 12, 'B'], [13, 11, 'S'], [13, 10, 'S']],
@@ -68,7 +68,7 @@ function sit(tail = 0, ...mods) {
   return patch(SIT, [...TAILS[tail], ...mods.flat()]);
 }
 
-// 歩き（右向き）20x13。体の上半分は共通で、脚だけ差し替えるにゃ
+// 歩き（右向き）20x13。体の上半分は共通で、脚だけ差し替えます
 const WALK_BODY = [
   '............S.....S.',
   '............BB...BB.',
@@ -173,7 +173,7 @@ export function moodOf({ state, activity, since }) {
   }
 }
 
-/** 気分と tick から描画命令の列を作るにゃ。座標はスプライト空間（1 = 1 ドット） */
+/** 気分と tick から描画命令の列を作ります。座標はスプライト空間（1 = 1 ドット） */
 function scene(mood, t, w, h) {
   const ops = [];
   const sitX = 3;
@@ -186,7 +186,7 @@ function scene(mood, t, w, h) {
       const frame = WALK[t % 4];
       const bob = t % 2 ? -1 : 0;
       if (w > 30) {
-        // 横長の帯では左右に往復するにゃ
+        // 横長の帯では左右に往復します
         const span = w - 20;
         const p = t % (span * 2);
         const x = p < span ? p : span * 2 - p;
@@ -308,13 +308,13 @@ const MOOD_LABEL = {
   'dead-sleep': 'おやすみ',
 };
 
-/** 猫を描く canvas の HTML を返すにゃ */
+/** 猫を描く canvas の HTML を返します */
 export function catCanvas({ seed, coat, state, activity, since, w = 24, h = 16, scale = 2, cls = '' }) {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
   return `<canvas class="cat ${cls}" width="${w * scale}" height="${h * scale}" style="width:${w * scale}px;height:${h * scale}px" data-w="${w}" data-h="${h}" data-seed="${esc(seed)}" data-coat="${esc(coat || '')}" data-state="${esc(state)}" data-activity="${esc(activity)}" data-since="${esc(since || '')}"></canvas>`;
 }
 
-/** 新しく DOM に入った猫 canvas を登録して即座に描くにゃ */
+/** 新しく DOM に入った猫 canvas を登録して即座に描きます */
 export function mountCats(root = document) {
   for (const c of root.querySelectorAll('canvas.cat')) {
     if (!live.has(c)) live.add(c);
@@ -322,7 +322,7 @@ export function mountCats(root = document) {
   }
 }
 
-/** 既存の canvas の状態だけ更新するにゃ（DOM を作り直さずに済むにゃ） */
+/** 既存の canvas の状態だけ更新します（DOM を作り直さずに済みます） */
 export function updateCat(canvas, { seed, coat, state, activity, since }) {
   Object.assign(canvas.dataset, { seed, coat: coat || '', state, activity: activity || '', since: since || '' });
   live.add(canvas);

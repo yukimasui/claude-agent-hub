@@ -68,7 +68,7 @@ test('proposals ブロックは提案の一覧として表示し、JSON が壊�
 });
 
 test('proposals ブロックの補足は Markdown として描画し、改行と箇条書きを保つ', () => {
-  // 補足を 1 行のインライン要素にすると、改行が失われ「- 」も本文に混ざって詰まって見えるため
+  // 補足を 1 行のインライン要素にすると、改行が失われ「- 」も本文に混ざって詰まって見えるためです
   const detail = '理由: 読み手が迷う\n変更: 次の 2 点\n- 手順を足す\n- `npm test` を載せる';
   const html = renderMarkdown('```proposals\n' + JSON.stringify({ items: [{ title: 'A', detail }] }) + '\n```');
   assert.match(

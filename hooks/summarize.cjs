@@ -1,5 +1,5 @@
 'use strict';
-// ツール入力を一行に要約するにゃ（hook とサーバの両方から使うにゃ）
+// ツール入力を一行に要約します（hook とサーバの両方から使います）
 
 const KEYS = ['file_path', 'path', 'command', 'pattern', 'url', 'query', 'description', 'prompt', 'skill'];
 

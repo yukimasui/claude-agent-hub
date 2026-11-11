@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 'use strict';
-// Agent Hub 用の Claude Code hook にゃ。
-// - 通常イベント: 最小限に整形して JSONL に追記するだけにゃ
-// - 対話イベント（PermissionRequest / Elicitation）: 要求内容を書き出し、ブラウザからの回答を待って返すにゃ
-//   PermissionRequest は TUI のダイアログと並行して動くので、ターミナルで先に答えても問題ないにゃ
-// 状態の解釈はサーバ側でやるから、ここは「絶対にエージェントの邪魔をしない」ことを最優先にするにゃ
+// Agent Hub 用の Claude Code hook です。
+// - 通常イベント: 最小限に整形して JSONL に追記するだけです
+// - 対話イベント（PermissionRequest / Elicitation）: 要求内容を書き出し、ブラウザからの回答を待って返します
+//   PermissionRequest は TUI のダイアログと並行して動くので、ターミナルで先に答えても問題ありません
+// 状態の解釈はサーバ側で行うので、ここは「絶対にエージェントの邪魔をしない」ことを最優先にします
 
 const fs = require('fs');
 const path = require('path');
@@ -13,7 +13,7 @@ const crypto = require('crypto');
 const agentId = process.env.AGENT_HUB_AGENT;
 const home = process.env.AGENT_HUB_HOME;
 
-// ハブ経由で起動したセッション以外は何もしないにゃ
+// ハブ経由で起動したセッション以外では何もしません
 if (!agentId || !home || !/^[A-Za-z0-9_-]+$/.test(agentId)) process.exit(0);
 
 const INTERACTIVE = new Set(['PermissionRequest', 'Elicitation']);
@@ -91,17 +91,17 @@ process.stdin.on('end', () => {
     try {
       return interact(input, ev);
     } catch {
-      // 対話モードの準備に失敗したら通常記録だけして TUI に任せるにゃ
+      // 対話モードの準備に失敗したら通常の記録だけをして TUI に任せます
     }
   }
   try {
     appendEvent(ev);
   } catch {}
-  // 必ず 0 で抜けるにゃ（PreToolUse で 2 を返すとツール実行がブロックされるにゃ）
+  // 必ず 0 で抜けます（PreToolUse で 2 を返すとツール実行がブロックされるため）
   process.exit(0);
 });
 
-/** ブラウザからの回答を待つにゃ。回答が来なければ何も出力せず抜けて TUI に任せるにゃ */
+/** ブラウザからの回答を待ちます。回答が来なければ何も出力せずに抜けて TUI に任せます */
 function interact(input, ev) {
   const reqId = `${agentId}-${Date.now().toString(36)}-${crypto.randomBytes(3).toString('hex')}`;
   const reqFile = path.join(home, 'requests', `${reqId}.json`);
@@ -153,14 +153,14 @@ function interact(input, ev) {
       fs.rmSync(resFile, { force: true });
     } catch {}
     if (res) return finish(res.result || 'answered', res.output || null);
-    // Claude Code 本体が居なくなったら終わるにゃ
+    // Claude Code 本体が居なくなったら終了します
     try {
       process.kill(parentPid, 0);
     } catch {
       return finish('aborted');
     }
     if (Date.now() > deadline) return finish('timeout');
-    // ハブが止まったら待つ意味がないので TUI に任せるにゃ（約 5 秒ごとに確認）
+    // ハブが止まったら待つ意味がないので TUI に任せます（約 5 秒ごとに確認）
     if (n % 20 === 0 && !serverAlive()) return finish('server-gone');
     setTimeout(tick, POLL_MS);
   };
