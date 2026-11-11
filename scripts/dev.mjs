@@ -98,13 +98,28 @@ function main() {
   console.log(`[dev] 開発用ハブを起動します（ファイルの変更で自動的に再起動します）`);
   console.log(`[dev]   HUB_PORT=${env.HUB_PORT} AGENT_HUB_HOME=${env.AGENT_HUB_HOME} HUB_TMUX_SESSION=${env.HUB_TMUX_SESSION}`);
 
-  const child = spawn(process.execPath, ['--watch', 'server.js'], { cwd: ROOT, env, stdio: 'inherit' });
+  const child = startServer(env);
 
   // 端末からの Ctrl+C は子プロセスにも届きますが、kill などで親だけが受け取った場合にも確実に止めます
   for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
     process.on(sig, () => child.kill(sig));
   }
-  child.on('exit', (code, signal) => process.exit(code ?? (signal ? 1 : 0)));
+}
+
+/**
+ * `node --watch server.js` を起動し、子プロセスが終わったら同じ終了コードで終わります。
+ * 起動に失敗すると（プロセスを作れない場合など）子プロセスに error が届きます。受けないと処理されない error として
+ * スタックトレースを出して落ちるため、理由を表示して終了コード 1 で終わります。
+ * spawnFn・log・exit は単体テストで差し替えるための引数です。
+ */
+export function startServer(env, { spawnFn = spawn, log = console.error, exit = process.exit } = {}) {
+  const child = spawnFn(process.execPath, ['--watch', 'server.js'], { cwd: ROOT, env, stdio: 'inherit' });
+  child.on('error', (e) => {
+    log(`[dev] 開発用ハブを起動できませんでした（${e.code || e.message}）`);
+    exit(1);
+  });
+  child.on('exit', (code, signal) => exit(code ?? (signal ? 1 : 0)));
+  return child;
 }
 
 /**
