@@ -16,10 +16,14 @@ export const DECISIONS = [
  * ```proposals ブロックを探して {title, items} を返します（項目を取り出せなければ null）。
  * 書き損じたブロックの後に書き直したブロックが続く応答もあるため、項目を取り出せる最初のブロックを使います。
  * サーバもキューを一時停止するかどうかをこの関数で判定するため、DOM や Node 専用の API は使いません。
+ *
+ * 開始の区切りは、行の先頭（前に空白だけがある場合を含む）にあるものだけを認めます。文の途中やインラインコードで
+ * 区切りに触れただけの箇所を開始とみなすと、提案ではない箇条書きをカードにしたり、後に続く本物のブロックの
+ * 開始の区切りを閉じとして使って見落としたりするためです。画面の Markdown 表示（md.js）とも同じ基準になります。
  */
 export function parseProposals(text) {
   const src = String(text || '');
-  const open = /```proposals[^\n]*\n/g;
+  const open = /^[ \t]*```proposals[^\n]*\n/gm;
   for (let m; (m = open.exec(src)); ) {
     const block = readBlock(src, m.index + m[0].length);
     if (!block) return null; // 閉じの無いブロックは提案として扱いません
@@ -34,7 +38,9 @@ export function parseProposals(text) {
  * 補足にコードブロックがあると、JSON の文字列の中にも区切り（バッククォート 3 つ）が現れます。最初の区切りで切ると
  * JSON が途中で切れて読み取れないため、区切りの候補を順に試し、中身が JSON として読める最初の区切りを閉じとみなします。
  * JSON は後ろに余分な文字があると読めないので、読める最初の範囲がブロックの中身全体になります。
- * どの候補でも JSON として読めない場合は、従来どおり最初の区切りまでを箇条書きとして読みます。
+ * どの候補でも JSON として読めない場合は、行の先頭にある最初の区切りまでを箇条書きとして読みます。項目の中で
+ * バッククォート 3 つに触れても、項目の途中でブロックが切れないようにするためです。JSON の閉じの候補は、
+ * 閉じの区切りが JSON と同じ行にある書き方も読めるよう行の位置を問いません（中身が JSON として読めることで確かめます）。
  *
  * 壊れた JSON や箇条書きのブロックでは、すべての候補を試すことになります。候補ごとに中身を切り出して解析すると
  * 「区切りの数 × 本文の長さ」の手間がかかり、会話の再描画のたびに全応答で呼ばれるため長い応答で遅くなります。
@@ -62,7 +68,19 @@ function readBlock(src, start) {
       return { proposals: parseBlock(body, json), end: i + 3 };
     }
   }
-  return { proposals: parseBlock(src.slice(start, first).trim()), end: first + 3 };
+  const close = lineStartFence(src, first);
+  if (close < 0) return null;
+  return { proposals: parseBlock(src.slice(start, close).trim()), end: close + 3 };
+}
+
+/** from 以降で、行の先頭（前に空白だけがある場合を含む）にある最初の区切りの位置を返します。無ければ -1 です */
+function lineStartFence(src, from) {
+  for (let i = src.indexOf('```', from); i >= 0; i = src.indexOf('```', i + 3)) {
+    let j = i - 1;
+    while (j >= 0 && (src[j] === ' ' || src[j] === '\t')) j--;
+    if (j < 0 || src[j] === '\n') return i;
+  }
+  return -1;
 }
 
 /**
