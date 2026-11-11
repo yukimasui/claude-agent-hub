@@ -370,6 +370,31 @@ test('引用符のない形の hook の実行結果もパスを省き、hook イ
   ]);
 });
 
+test('hook のコマンドに引数が続く場合は、引数ではなくスクリプトのファイル名を表示する', () => {
+  // 引用符のない形では、コマンドの後ろのオプションや値も引数として並びます（パスは架空のものです）
+  const items = read([
+    user(
+      '<local-command-stdout>' +
+        [
+          'PreCompact [/opt/example/hooks/notify.sh --flag] completed successfully',
+          'SessionStart [/opt/example/bin/node /opt/example/hooks/start.mjs --level debug] failed: exit code 2',
+          'Stop [node hooks/stop.js -q] completed successfully',
+          "PostCompact ['C:\\example\\hooks\\post.cjs' --config=/opt/example/hook.json] completed successfully",
+          // ファイル名らしい引数がなければ、コマンドの名前を表示します
+          'Notification [notify-send --urgency low] completed successfully',
+        ].join('\n') +
+        '</local-command-stdout>',
+    ),
+  ]);
+  assert.deepEqual(items[0].text.split('\n'), [
+    'PreCompact の hook（notify.sh）: completed successfully',
+    'SessionStart の hook（start.mjs）: failed: exit code 2',
+    'Stop の hook（stop.js）: completed successfully',
+    'PostCompact の hook（post.cjs）: completed successfully',
+    'Notification の hook（notify-send）: completed successfully',
+  ]);
+});
+
 test('hook の行に似た長い出力でも、照合に時間がかからない', () => {
   // 引用符のない引数の区切り方が何通りもあると、閉じかっこのない行で照合をやり直し続けて止まるおそれがあるためです
   const line = `PreCompact [${'a'.repeat(5000)}`;
