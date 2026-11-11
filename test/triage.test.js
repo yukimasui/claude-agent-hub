@@ -118,6 +118,52 @@ test('複数のブロックがあれば、項目を取り出せる最初のブ�
   assert.deepEqual(parseProposals(text), { title: '訂正版', items: [{ id: '1', title: 'A', detail: '' }] });
 });
 
+test('文の途中で区切りに触れただけの箇所は、提案ブロックの開始として扱わない', () => {
+  // 引き継ぎメモの中で書き方に触れた文を開始とみなし、メモの箇条書きを提案のカードにしていた不具合の再現です
+  const memo = [
+    '```handoff',
+    '# 引き継ぎメモ',
+    '- 複数の提案を出すときは、応答の最後に ```proposals の JSON ブロックを付ける',
+    '',
+    '## 現在の状況',
+    '- 開いている Issue はない',
+    '- 次の指示を待つ',
+    '```',
+  ].join('\n');
+  assert.equal(parseProposals(memo), null);
+});
+
+test('文の途中の区切りに、後に続く本物の提案ブロックを横取りされない', () => {
+  // 文の途中の区切りを開始とみなすと、本物のブロックの開始の区切りが閉じとして使われ、ブロックを見落としていました
+  const text = [
+    '判定はインラインコードの `/```proposals[^\\n]*\\n/g` で行っています。',
+    '',
+    '```proposals',
+    '{"items":[{"title":"A"}]}',
+    '```',
+  ].join('\n');
+  assert.deepEqual(parseProposals(text), { title: '提案', items: [{ id: '1', title: 'A', detail: '' }] });
+});
+
+test('前に空白だけがある区切りは、行の先頭の区切りとして扱う', () => {
+  // 画面の Markdown 表示（md.js）と同じく、字下げした区切りもコードブロックの区切りとみなします
+  assert.deepEqual(parseProposals('前置き\n  ```proposals\n{"items":[{"title":"A"}]}\n  ```'), {
+    title: '提案',
+    items: [{ id: '1', title: 'A', detail: '' }],
+  });
+});
+
+test('箇条書きのブロックでは、行の途中の区切りを閉じとして扱わない', () => {
+  // 項目の中でバッククォート 3 つに触れても、項目の途中でブロックが切れないことを確かめます
+  assert.deepEqual(parseProposals('```proposals\n1. `a```b` を直す\n2. 二\n```'), {
+    title: '提案',
+    items: [
+      { id: '1', title: '`a```b` を直す', detail: '' },
+      { id: '2', title: '二', detail: '' },
+    ],
+  });
+});
+
 test('findOpenProposals は最後の利用者の発言より後で、項目を取り出せる最も新しい応答を返す', () => {
   const older = { role: 'assistant', text: block('[{"title":"古い"}]') };
   const newer = { role: 'assistant', text: block('[{"title":"新しい"}]') };
