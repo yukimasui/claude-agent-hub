@@ -125,7 +125,18 @@ function onAgents(list) {
   }
   firstLoad = false;
   agents = list;
-  if (!selected()) selectedId = agents[0]?.id ?? null;
+  if (!selected()) {
+    // 選んでいたエージェントが削除された場合などです。選択を移すだけでは、移った先の会話を読み直さないことがあり
+    // （最後のイベントの時刻が前回の表示時と同じ場合）、前のエージェントの会話や仕分けボードが残るため、select で表示を消してから切り替えます
+    const next = agents[0]?.id;
+    if (next) select(next);
+    else {
+      selectedId = null;
+      $('#chat').innerHTML = '';
+      $('#term').textContent = '';
+      closeTriage();
+    }
+  }
   // 選んでいたサブエージェントが一覧から消えた（/clear で新しいセッションになったなど）場合は親エージェントの表示に戻します
   if (selectedSub && !selectedSubagent()) setSelectedSub(null);
   renderList();
