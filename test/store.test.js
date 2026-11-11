@@ -232,62 +232,97 @@ test('ingest は途中までの行を持ち越し、壊れた行を読み飛ば�
 });
 
 /**
- * statSync の直後に任意の処理を差し込んで ingest を呼びます。
- * サイズを調べてから読むまでの間にファイルが消される、まれなタイミングを再現するためです。
+ * ファイルを開いて fstatSync で調べた直後に任意の処理を差し込んで ingest を呼びます。
+ * 調べてから読むまでの間にファイルが消されたり切り詰められたりする、まれなタイミングを再現するためです。
+ *
+ * fs.fstatSync を一時的に差し替えますが、差し替えから復元までを 1 回の同期的な呼び出しの中で終えるので、
+ * テストを並行実行にしても、ほかのテストが差し替えた関数を呼ぶことはありません。node:test の並行実行は
+ * 同じスレッドの中で await の位置を境に切り替わるだけで、同期的な処理の途中に割り込まないためです
+ * （ファイルごとの並行実行は別のプロセスで動くので、そもそも影響しません）。
+ * このため、この関数と race には await を挟まないでください。非同期にすると、差し替えている間に
+ * ほかのテストが動き、そのテストの ingest にも race が差し込まれるおそれがあります。
  */
 function ingestWithRace(store, id, race) {
-  const realStat = fs.statSync;
-  fs.statSync = (...args) => {
-    fs.statSync = realStat;
-    const st = realStat(...args);
+  const realFstat = fs.fstatSync;
+  fs.fstatSync = (...args) => {
+    fs.fstatSync = realFstat;
+    const st = realFstat(...args);
     race();
     return st;
   };
   try {
     store.ingest(id);
   } finally {
-    fs.statSync = realStat;
+    fs.fstatSync = realFstat;
   }
 }
 
-test('ingest はサイズを調べた後にファイルやフォルダが消されても例外を出さず、次の読み込みで回復する', () => {
+test('ingest はイベントファイルやフォルダが消されても例外を出さず、作り直されたら先頭から読み直す', () => {
   const { store, id, emit } = setup();
   const file = store.eventsFile(id);
-  // 作り直したファイルが前回の読み込み位置より短くなるよう、最初の行を長くしておきます
+  // 作り直したファイルが前回の読み込み位置より短くなるよう、最初の行を長くしておきます。
+  // 消した直後に作ったファイルは inode 番号が再利用されることがあり、その場合はサイズで作り直しを判定するためです
   emit({ event: 'SessionStart', session_id: 's1', transcript_path: `/tmp/${'x'.repeat(200)}.jsonl` });
 
-  fs.appendFileSync(file, JSON.stringify({ ts: 1, event: 'UserPromptSubmit', prompt: '消える前' }) + '\n');
-  assert.doesNotThrow(() => ingestWithRace(store, id, () => fs.rmSync(file)));
+  // 開く前に消されていた場合は、何もせずに戻ります
+  fs.rmSync(file);
+  assert.doesNotThrow(() => store.ingest(id));
   assert.equal(store.get(id).state, 'idle');
 
+  // 開いた後に消された場合は、消される前の内容を読みます
+  fs.appendFileSync(file, JSON.stringify({ ts: 1, event: 'UserPromptSubmit', prompt: '消える前' }) + '\n');
+  assert.doesNotThrow(() => ingestWithRace(store, id, () => fs.rmSync(file)));
+  assert.equal(store.get(id).state, 'running');
+  assert.equal(store.get(id).lastPrompt, '消える前');
+
   // ファイルが作り直されたら、次の読み込みで先頭から読み直します
-  let a = emit({ event: 'UserPromptSubmit', prompt: '作り直した後' });
-  assert.equal(a.state, 'running');
-  assert.equal(a.lastPrompt, '作り直した後');
+  let a = emit({ event: 'Stop' });
+  assert.equal(a.state, 'done');
 
   // フォルダごと消された場合も同じです
-  fs.appendFileSync(file, JSON.stringify({ ts: 2, event: 'Stop' }) + '\n');
+  fs.appendFileSync(file, JSON.stringify({ ts: 2, event: 'UserPromptSubmit', prompt: 'フォルダが消える前' }) + '\n');
   assert.doesNotThrow(() => ingestWithRace(store, id, () => fs.rmSync(EVENTS_DIR, { recursive: true })));
-  assert.equal(store.get(id).state, 'running');
+  assert.equal(store.get(id).lastPrompt, 'フォルダが消える前');
+  assert.doesNotThrow(() => store.ingest(id));
   fs.mkdirSync(EVENTS_DIR, { recursive: true });
   a = emit({ event: 'Stop' });
   assert.equal(a.state, 'done');
 });
 
-test('ingest はサイズを調べた後にファイルが短く作り直されても、実際に読めた分だけ読み進める', () => {
+test('ingest は調べた後にファイルが短く切り詰められても、実際に読めた分だけ読み進める', () => {
   const { store, id } = setup();
   const file = store.eventsFile(id);
   const line = (ev) => JSON.stringify({ ts: 1, ...ev }) + '\n';
   fs.appendFileSync(file, line({ event: 'SessionStart', session_id: 's1' }) + line({ event: 'UserPromptSubmit', prompt: '古いファイル' }));
+  // writeFileSync は既存のファイルを同じ inode のまま切り詰めて書き直します
   ingestWithRace(store, id, () => fs.writeFileSync(file, line({ event: 'SessionStart', session_id: 's2' })));
   assert.equal(store.get(id).sessionId, 's2');
   assert.equal(store.get(id).state, 'idle');
 
-  // 作り直したファイルの続きを、読み飛ばさずに取り込むこと
+  // 書き直したファイルの続きを、読み飛ばさずに取り込むこと
   fs.appendFileSync(file, line({ event: 'UserPromptSubmit', prompt: '新しいファイル' }));
   store.ingest(id);
   assert.equal(store.get(id).state, 'running');
   assert.equal(store.get(id).lastPrompt, '新しいファイル');
+});
+
+test('ingest は作り直されたイベントファイルを、前回の読み込み位置より長くても先頭から読み直す', () => {
+  const { store, id } = setup();
+  const file = store.eventsFile(id);
+  const line = (ev) => JSON.stringify({ ts: 1, ...ev }) + '\n';
+  fs.appendFileSync(file, line({ event: 'SessionStart', session_id: 's1' }));
+  store.ingest(id);
+  assert.equal(store.get(id).sessionId, 's1');
+
+  // 別のファイルに書いてから置き換えると、必ず別の inode になります。サイズは前回の読み込み位置より長くしておきます
+  const tmp = file + '.new';
+  fs.writeFileSync(tmp, line({ event: 'SessionStart', session_id: 's2' }) + line({ event: 'UserPromptSubmit', prompt: '作り直したファイル' }));
+  assert.ok(fs.statSync(tmp).size > fs.statSync(file).size);
+  fs.renameSync(tmp, file);
+  store.ingest(id);
+  assert.equal(store.get(id).sessionId, 's2');
+  assert.equal(store.get(id).state, 'running');
+  assert.equal(store.get(id).lastPrompt, '作り直したファイル');
 });
 
 test('init は agents.json とイベントファイルから状態を復元する', () => {
