@@ -6,8 +6,10 @@ import path from 'node:path';
 import { randomUUID, randomBytes } from 'node:crypto';
 import {
   CLAUDE_BIN,
+  CONTEXT_WARN_TOKENS,
   DEFAULT_MODEL,
   EVENTS_DIR,
+  HANDOFFS_DIR,
   HEARTBEAT_FILE,
   HOOK_EVENTS,
   HOOK_SCRIPT,
@@ -27,9 +29,11 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason } from './lib/queue.js';
+import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason } from './lib/queue.js';
+import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
+import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
 import * as tmux from './lib/tmux.js';
-import { readTranscript, readTranscriptImage } from './lib/transcript.js';
+import { readContextTokens, readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, listen, listenErrorMessage, sendImage, serveStatic } from './lib/http.js';
 import { watchDir } from './lib/watch.js';
@@ -176,6 +180,17 @@ store.on('change', (id) => {
   else refreshSubagents(id);
 });
 
+// ---------- コンテキスト量 ----------
+
+// transcript の最新の応答から求め、変わったときだけエージェントの情報を更新して画面に配信します
+function refreshContext(id) {
+  const a = store.get(id);
+  if (!a) return;
+  const tokens = readContextTokens(a.transcriptPath);
+  if (tokens !== a.contextTokens) store.patch(id, { contextTokens: tokens });
+}
+store.on('change', (id) => refreshContext(id));
+
 // ---------- 対話要求 ----------
 
 const reqFile = (reqId) => path.join(REQUESTS_DIR, `${reqId}.json`);
@@ -280,7 +295,8 @@ const dispatching = new Set();
 const dispatchTimers = new Map();
 
 function readyForNext(a) {
-  return a && a.alive && a.queue.length && !a.pending.length && (a.state === 'done' || a.state === 'idle') && !dispatching.has(a.id);
+  // 引き継ぎの間は、一時停止の状態にかかわらず送りません（メモの応答や新しいセッションの最初の指示の前に割り込ませないため）
+  return a && a.alive && a.queue.length && !a.pending.length && (a.state === 'done' || a.state === 'idle') && !dispatching.has(a.id) && !isHandoffActive(a.handoff);
 }
 
 // 状態が変わるたびに、少し待ってから次のタスクを送れるか確認します
@@ -324,6 +340,134 @@ async function dispatchNext(id, { force = false } = {}) {
   } finally {
     dispatching.delete(id);
   }
+}
+
+// ---------- 引き継いでリセット ----------
+
+// 段階を進める処理を実行中のエージェントです。tmux への送信を待つ間に、状態の変化で同じ段階を二重に進めないようにします
+const handoffBusy = new Set();
+
+/** 引き継ぎを始めます。キューを一時停止し、引き継ぎメモを応答として書くよう指示します */
+async function startHandoff(a) {
+  const reason =
+    handoffBlockReason(a) ||
+    (dispatching.has(a.id) || handoffBusy.has(a.id) ? 'キューの送信中です。少し待ってから実行してください' : null) ||
+    (!fs.existsSync(a.transcriptPath) ? 'まだ会話がありません' : null);
+  if (reason) throw httpError(409, reason);
+  clearTimeout(dispatchTimers.get(a.id));
+  const marker = `handoff-${randomBytes(4).toString('hex')}`;
+  const sentAt = Date.now();
+  // 指示を送り終えるまでは段階を進めないよう、段階を保存する前から処理中にしておきます
+  handoffBusy.add(a.id);
+  // 段階を保存してから指示を送ります。送った後にサーバが止まっても、再起動後に同じ段階から判定を続けられるようにするためです
+  store.patch(a.id, {
+    handoff: { stage: 'memo', marker, fromSession: a.sessionId, startedAt: sentAt, sentAt, prevPaused: a.queuePaused, prevNote: a.queueNote },
+    queuePaused: true,
+    queueNote: HANDOFF_PAUSE_NOTE,
+  });
+  try {
+    await tmux.sendText(a.paneId, buildMemoPrompt(marker));
+  } catch (e) {
+    finishHandoff(a.id, 'failed', `引き継ぎメモの指示を送れませんでした: ${e.message}（/clear は送っていません）`);
+    throw httpError(500, `引き継ぎメモの指示を送れませんでした: ${e.message}`);
+  } finally {
+    handoffBusy.delete(a.id);
+  }
+  const cur = store.get(a.id);
+  // 送信を待つ間に状態が変わっていなければ、UserPromptSubmit を待たずに「実行中」にします（キューの送信と同じ扱いです）
+  if (cur && isHandoffActive(cur.handoff) && cur.stateSince < sentAt) {
+    const now = Date.now();
+    store.patch(a.id, { state: 'running', activity: '引き継ぎメモを作成しています…', stateSince: now, turnStartedAt: now });
+  }
+}
+
+/** 引き継ぎを終え、キューの一時停止を元に戻します。結果（完了・中止とその理由）は画面で閉じるまで残します */
+function finishHandoff(id, stage, message, extra = {}) {
+  const a = store.get(id);
+  if (!a?.handoff) return;
+  const { stage: _s, marker, prevPaused, prevNote, ...rest } = a.handoff;
+  store.patch(id, { ...queueRestoreFields(a), ...extra, handoff: { ...rest, stage, message: message || '', finishedAt: Date.now() } });
+}
+
+/** 引き継ぎメモを保存し、保存先のパスを返します */
+function saveMemo(a, memo) {
+  fs.mkdirSync(HANDOFFS_DIR, { recursive: true });
+  const createdAt = Date.now();
+  const file = path.join(HANDOFFS_DIR, memoFileName(a.id, createdAt));
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, formatMemoFile({ id: a.id, name: a.name, cwd: a.cwd, sessionId: a.sessionId, createdAt }, memo));
+  fs.renameSync(tmp, file);
+  return file;
+}
+
+/**
+ * 状態の変化と定期的な確認のたびに呼び、引き継ぎの段階を進めます。何をするかは lib/handoff.js の handoffStep が決めます。
+ * /clear は、メモを保存して段階を clear に進めたことを保存してから送ります。サーバが止まっても、メモのないまま /clear だけが送られた状態にならないためです。
+ */
+async function advanceHandoff(id) {
+  const a = store.get(id);
+  if (!a || !isHandoffActive(a.handoff) || handoffBusy.has(id)) return;
+  handoffBusy.add(id);
+  try {
+    const step = handoffStep(a, { now: Date.now(), readItems: () => readTranscript(a.transcriptPath) });
+    switch (step.type) {
+      case 'fail':
+        finishHandoff(id, 'failed', step.reason);
+        break;
+      case 'clear': {
+        const file = saveMemo(a, step.memo);
+        store.patch(id, { handoff: { ...a.handoff, stage: 'clear', memoFile: file, clearSentAt: Date.now() }, activity: '/clear で会話をリセットしています…' });
+        try {
+          await tmux.sendText(a.paneId, '/clear');
+        } catch (e) {
+          finishHandoff(id, 'failed', `/clear を送れませんでした: ${e.message}（メモは ${file} に保存しています）`);
+        }
+        break;
+      }
+      case 'resume': {
+        const file = a.handoff.memoFile;
+        let memo;
+        try {
+          memo = parseMemoFile(fs.readFileSync(file, 'utf8'));
+        } catch (e) {
+          finishHandoff(id, 'failed', `保存したメモを読めませんでした: ${e.message}`);
+          break;
+        }
+        try {
+          await tmux.sendText(a.paneId, buildResumePrompt(memo, file));
+        } catch (e) {
+          finishHandoff(id, 'failed', `新しいセッションに再開の指示を送れませんでした: ${e.message}（メモは ${file} に保存しています）`);
+          break;
+        }
+        const now = Date.now();
+        finishHandoff(id, 'done', `メモは ${file} に保存しています`, { state: 'running', activity: '引き継ぎメモを付けて再開しました', stateSince: now, turnStartedAt: now });
+        break;
+      }
+      case 'finish':
+        finishHandoff(id, 'done', step.note);
+        break;
+    }
+  } catch (e) {
+    console.error(e);
+    // メモの保存に失敗した場合などです。段階が clear に進む前であれば /clear は送っていません
+    const cur = store.get(id);
+    if (isHandoffActive(cur?.handoff)) finishHandoff(id, 'failed', `引き継ぎを続けられませんでした: ${e.message}${cur.handoff.stage === 'memo' ? '（/clear は送っていません）' : ''}`);
+  } finally {
+    handoffBusy.delete(id);
+  }
+}
+store.on('change', (id) => {
+  if (isHandoffActive(store.get(id)?.handoff)) advanceHandoff(id).catch((e) => console.error(e));
+});
+
+function handoffOp(a, body) {
+  if (body.op === 'start') return startHandoff(a);
+  if (body.op === 'dismiss') {
+    if (isHandoffActive(a.handoff)) throw httpError(409, '引き継いでリセットを実行中です');
+    store.patch(a.id, { handoff: null });
+    return;
+  }
+  throw httpError(400, `不明な操作です: ${body.op}`);
 }
 
 function send(res, status, body) {
@@ -385,7 +529,7 @@ async function api(req, res, url) {
   }
 
   if (url.pathname === '/api/info') {
-    return send(res, 200, { tmuxSession: TMUX_SESSION, defaultModel: DEFAULT_MODEL, workspaces: WORKSPACES_DIR, hubHome: HUB_HOME });
+    return send(res, 200, { tmuxSession: TMUX_SESSION, defaultModel: DEFAULT_MODEL, workspaces: WORKSPACES_DIR, hubHome: HUB_HOME, contextWarnTokens: CONTEXT_WARN_TOKENS });
   }
 
   if (!m) throw httpError(404, 'Not found');
@@ -448,6 +592,9 @@ async function api(req, res, url) {
     case 'respond':
       respond(a, body);
       return send(res, 200, { ok: true });
+    case 'handoff':
+      await handoffOp(a, body);
+      return send(res, 200, { ok: true });
     case 'restart':
       await restartAgent(a);
       return send(res, 200, { ok: true });
@@ -487,6 +634,14 @@ watchDir(EVENTS_DIR, (_type, fname) => {
 // fs.watch の取りこぼし対策の保険です
 setInterval(() => store.list().forEach((a) => store.ingest(a.id)), 1500);
 setInterval(() => reconcile().catch(() => {}), 2000);
+// 引き継ぎの待ち時間の上限と、Stop の後に transcript へメモが書き込まれるのを待つ間は、イベントが届かなくても判定し直します。
+// コンテキスト量も、イベントの後に transcript へ書き込まれた応答を取りこぼさないよう定期的に確かめます（追記分だけを読みます）
+setInterval(() => {
+  for (const a of store.list()) {
+    refreshContext(a.id);
+    if (isHandoffActive(a.handoff)) advanceHandoff(a.id).catch((e) => console.error(e));
+  }
+}, 1000);
 // プロセスが終了したエージェントのサブエージェントは記録が増えないため、完了通知を読み終えていれば定期的な確認を省きます
 // （親の状態が変わったときは 'change' で組み立て直します）
 setInterval(() => {

@@ -41,6 +41,7 @@
               <button data-tab="term" class="tab">ターミナル</button>
             </nav>
             <div class="actions">
+              <button id="btn-handoff" title="引き継ぎメモを書かせてから /clear し、メモを付けて新しいセッションで再開します">引き継いでリセット</button>
               <button id="btn-focus" title="tmux 側でこのウィンドウを選択します">tmux で表示</button>
               <button id="btn-restart">再起動</button>
               <button id="btn-kill" class="danger">削除</button>
@@ -51,7 +52,13 @@
             <span id="d-cat" class="cat-strip"></span>
             <span id="d-badge" class="badge"></span>
             <span id="d-act" class="act"></span>
+            <span id="d-ctx" class="ctx" hidden></span>
             <span id="d-elapsed" class="elapsed"></span>
+          </div>
+          <div id="handoff-bar" class="handoff-bar" hidden aria-live="polite">
+            <span id="handoff-label" class="handoff-label"></span>
+            <span id="handoff-msg" class="handoff-msg"></span>
+            <button type="button" id="btn-handoff-dismiss" class="link">閉じる</button>
           </div>
 
           <div id="chat" class="chat"></div>

@@ -6,6 +6,7 @@ import { queueSignature, renderQueue } from './queue.js';
 import { closeBoard, findOpenProposals, isDone, openBoard, parseProposals, proposalKey } from './triage.js';
 import { thumbsHtml } from './images.js';
 import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
+import { contextOver, contextTitle, formatContext, handoffBlockReason, handoffStageLabel, isHandoffActive } from './handoff.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -35,6 +36,8 @@ const seenPending = new Set();
 const attention = new Set();
 let pendingSig = '';
 let forceScroll = false;
+// サーバの設定（/api/info）です。コンテキスト量の目安（contextWarnTokens）を目印の判定に使います
+let hubInfo = {};
 
 // ---------- ユーティリティ ----------
 
@@ -192,6 +195,7 @@ function renderList() {
         <div class="row">
           <span class="activity">${esc(a.activity)}</span>
           ${a.queue?.length ? `<span class="chip q-chip" title="キューの件数">キュー ${a.queue.length}${a.queuePaused ? '・停止中' : ''}</span>` : ''}
+          ${ctxChip(a)}
           ${subChip}
           <span class="elapsed" data-since="${since || ''}">${elapsed(since)}</span>
         </div>
@@ -204,6 +208,14 @@ function renderList() {
 
   const pending = agents.filter((a) => a.state === 'waiting' || attention.has(a.id)).length;
   document.title = pending ? `(${pending}) Agent Hub` : 'Agent Hub';
+}
+
+/** 一覧のカードに出すコンテキスト量です。目安を超えたら警告の色にします */
+function ctxChip(a) {
+  const text = formatContext(a.contextTokens);
+  if (!text) return '';
+  const over = contextOver(a.contextTokens, hubInfo.contextWarnTokens);
+  return `<span class="chip ctx-chip${over ? ' warn' : ''}" title="${esc(contextTitle(a.contextTokens, hubInfo.contextWarnTokens))}">${esc(text)}${over ? ' ⚠' : ''}</span>`;
 }
 
 /**
@@ -277,12 +289,43 @@ function renderDetail() {
   $('#d-elapsed').dataset.since = since || '';
   $('#d-elapsed').textContent = elapsed(since);
   $('#btn-restart').disabled = a.alive;
+  renderContext(a);
+  renderHandoff(a);
   $('#btn-send').disabled = !a.alive;
   for (const b of document.querySelectorAll('[data-key]')) b.disabled = !a.alive;
   for (const b of document.querySelectorAll('[data-tab]')) b.classList.toggle('active', b.dataset.tab === tab);
   $('#chat').hidden = tab !== 'chat';
   $('#term').hidden = tab !== 'term';
   syncQueue(a);
+}
+
+/** 詳細のステータス行のコンテキスト量です。目安を超えたら「切り替え推奨」を添えます */
+function renderContext(a) {
+  const el = $('#d-ctx');
+  const text = formatContext(a.contextTokens);
+  const over = contextOver(a.contextTokens, hubInfo.contextWarnTokens);
+  el.hidden = !text;
+  el.classList.toggle('warn', over);
+  el.textContent = over ? `${text} ⚠ 切り替え推奨` : text;
+  el.title = contextTitle(a.contextTokens, hubInfo.contextWarnTokens);
+}
+
+/** 「引き継いでリセット」のボタンと、段階・結果の表示です */
+function renderHandoff(a) {
+  const reason = handoffBlockReason(a);
+  const btn = $('#btn-handoff');
+  btn.disabled = !!reason;
+  btn.title = reason ? `実行できません: ${reason}` : '引き継ぎメモを書かせてから /clear し、メモを付けて新しいセッションで再開します';
+  const h = a.handoff;
+  const bar = $('#handoff-bar');
+  bar.hidden = !h;
+  if (!h) return;
+  const active = isHandoffActive(h);
+  bar.className = `handoff-bar ${active ? 'active' : h.stage}`;
+  $('#handoff-label').textContent = `引き継いでリセット: ${handoffStageLabel(h)}`;
+  $('#handoff-msg').textContent = active ? '完了するまで、送信とキューの自動送信を止めています' : h.message || '';
+  // 進行中は閉じられません（サーバも受け付けません）。結果は確かめてから閉じてもらいます
+  $('#btn-handoff-dismiss').hidden = active;
 }
 
 // ---------- キュー ----------
@@ -680,6 +723,32 @@ $('#btn-focus').addEventListener('click', async () => {
     toast(e.message);
   }
 });
+$('#btn-handoff').addEventListener('click', async () => {
+  const a = selected();
+  if (!a || handoffBlockReason(a)) return;
+  const ok = confirm(
+    `「${a.name}」で引き継いでリセットを実行しますか？\n\n` +
+      '1. 引き継ぎメモを応答として書くよう指示します\n' +
+      '2. 応答が終わったらメモを保存し、/clear で会話をリセットします\n' +
+      '3. 新しいセッションの最初の指示として、メモを付けて再開を指示します\n\n' +
+      '実行中はキューの自動送信と入力欄からの送信を止めます。メモを取り出せなかった場合は /clear せずに止めます。',
+  );
+  if (!ok) return;
+  try {
+    await api('POST', `/api/agents/${a.id}/handoff`, { op: 'start' });
+  } catch (e) {
+    toast(e.message);
+  }
+});
+$('#btn-handoff-dismiss').addEventListener('click', async () => {
+  const a = selected();
+  if (!a) return;
+  try {
+    await api('POST', `/api/agents/${a.id}/handoff`, { op: 'dismiss' });
+  } catch (e) {
+    toast(e.message);
+  }
+});
 $('#btn-restart').addEventListener('click', async () => {
   const a = selected();
   if (!a) return;
@@ -768,3 +837,10 @@ mountCats($('#empty'));
 
 renderDetail();
 connect();
+api('GET', '/api/info')
+  .then((info) => {
+    hubInfo = info;
+    renderList();
+    renderDetail();
+  })
+  .catch(() => {});
