@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import {
   ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
   STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE,
-  applyQueueOp, hasOpenProposals, proposalPauseNote, sendBlockReason,
+  applyQueueOp, clearFinished, hasOpenProposals, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
 import { proposalKey, findOpenProposals } from '../public/triage.js';
 import { queueSignature, replyMark, sendNextTitle, staleHead } from '../public/queue.js';
@@ -499,4 +499,16 @@ test('キューの描き直しの判定値は、判断待ちの提案が「分�
   // 引き継ぎの開始・終了で、一時停止・再開のボタンの表示が変わるため描き直します
   assert.notEqual(queueSignature(a, null), queueSignature({ ...a, handoff: { stage: 'memo' } }, null));
   assert.equal(queueSignature(a, null), queueSignature({ ...a, handoff: { stage: 'done' } }, null));
+});
+
+test('「/clear 付き」の項目は、セッション ID が変わるまで /clear の完了を待つ', () => {
+  // /clear では SessionEnd に続いて新しいセッション ID の SessionStart が届きます。
+  // 先に届く SessionEnd で最後のイベントの時刻が変わっても、セッション ID が同じうちは待ち続けること
+  const before = 's1';
+  assert.equal(clearFinished(before, agent({ sessionId: 's1', lastEventAt: 1 })), false);
+  assert.equal(clearFinished(before, agent({ sessionId: 's1', state: 'ended', lastEventAt: 2 })), false);
+  assert.equal(clearFinished(before, agent({ sessionId: 's2', lastEventAt: 3 })), true);
+  // エージェントが削除されたか終了した場合は、待っても新しいセッションは始まらないので待つのをやめます
+  assert.equal(clearFinished(before, undefined), true);
+  assert.equal(clearFinished(before, agent({ sessionId: 's1', alive: false })), true);
 });

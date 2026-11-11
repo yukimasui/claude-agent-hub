@@ -190,6 +190,26 @@ test('/clear の段階: 新しいセッションを確認できないまま時�
   assert.ok(dead.reason.includes('/m.md'));
 });
 
+test('途中でエージェントが再起動されたら、別のセッションになっていても再開の指示を送らずに中止する', () => {
+  // 再起動はプロセスが終了してから行うため、通常は終了した時点（alive が false）で中止になります。
+  // 終了を確かめる前に再起動された場合も、再起動後のセッションは送った /clear によるものではないため、メモを送らずに中止します。
+  // 再起動したかどうかは、親のプロセスの起動時刻（processStartedAt。ハブからの再起動と startup / resume の SessionStart で更新）で判断します
+  const h = { stage: 'clear', memoFile: '/m.md', clearSentAt: T0 + 2000 };
+  const restarted = handoffStep(agent({ state: 'idle', sessionId: 's3', processStartedAt: T0 + 2500 }, h), { now: T0 + 3000 });
+  assert.equal(restarted.type, 'fail');
+  assert.match(restarted.reason, /再起動/);
+  assert.ok(restarted.reason.includes('/m.md'));
+  // 再起動後も同じセッションを再開した場合（/clear の前に止まった場合など）も、時間切れを待たずに中止します
+  assert.equal(handoffStep(agent({ state: 'starting', processStartedAt: T0 + 2500 }, h), { now: T0 + 3000 }).type, 'fail');
+  // メモの段階で再起動された場合は、/clear を送っていないことを伝えます
+  const memo = handoffStep(agent({ state: 'idle', stateSince: T0 + 600, processStartedAt: T0 + 500 }), { now: T0 + 1000, readItems: () => answered });
+  assert.equal(memo.type, 'fail');
+  assert.match(memo.reason, /再起動/);
+  assert.match(memo.reason, /\/clear は送っていません/);
+  // 引き継ぎを始める前に起動したプロセスのままなら、/clear による新しいセッションとして再開の指示を送ります
+  assert.equal(handoffStep(agent({ state: 'idle', sessionId: 's2', processStartedAt: T0 - 1000 }, h), { now: T0 + 3000 }).type, 'resume');
+});
+
 test('サーバの再起動後に保存した段階から判定し直しても、メモを取り出せる前に /clear へ進まない', () => {
   // 再起動後は、イベント JSONL から復元した状態と保存した handoff だけで判定します。
   // 指示を送る前に止まった（UserPromptSubmit が記録されていない）場合は「応答完了」のまま時刻が古いので、待った後に中止になります
