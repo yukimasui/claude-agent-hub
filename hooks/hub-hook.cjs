@@ -49,11 +49,17 @@ function writeJsonAtomic(file, data) {
 }
 
 const chunks = [];
+let inputRead = false;
 // 標準入力の読み込みに失敗すると（接続が切られた場合など）error が届きます。受けないと処理されない error として
-// 終了コード 1 で落ちるため、受けたうえで何もせず 0 で終わり、エージェントの動作に影響を与えないようにします
-process.stdin.on('error', () => process.exit(0));
+// 終了コード 1 で落ちるため、受けたうえで何もせず 0 で終わり、エージェントの動作に影響を与えないようにします。
+// 読み終えた後に届いた error は無視します。対話の待機中にそのまま終わると、ブラウザから回答できなくなるうえ、
+// 要求ファイルが残り InteractionDone も書かれません。読み終えた後は標準入力を使わないので、待機を続けて問題ありません
+process.stdin.on('error', () => {
+  if (!inputRead) process.exit(0);
+});
 process.stdin.on('data', (c) => chunks.push(c));
 process.stdin.on('end', () => {
+  inputRead = true;
   let input, ev;
   try {
     const { summarize, shorten } = require('./summarize.cjs');

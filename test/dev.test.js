@@ -3,10 +3,11 @@
 // 利用者のホームの実際のパスには触れないよう、ホームディレクトリを一時ディレクトリに差し替えて行います。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { isDirectRun, isLaunchedFrom, resolveDevEnv } from '../scripts/dev.mjs';
+import { isDirectRun, isLaunchedFrom, resolveDevEnv, startServer } from '../scripts/dev.mjs';
 import { pathToFileURL } from 'node:url';
 
 const AGENT = 'a1234567';
@@ -140,4 +141,37 @@ test('isDirectRun はシンボリックリンクを含むパスで実行した�
   assert.equal(isDirectRun(path.join(link, 'dev.mjs'), url), true, 'リンクを含むパス');
   assert.equal(isDirectRun(path.join(dir, 'other.mjs'), url), false, '別のファイル');
   assert.equal(isDirectRun(undefined, url), false, '引数なし（import された場合など）');
+});
+
+test('startServer は子プロセスを起動できなかった場合に、落ちずに理由を表示して終了コード 1 で終わる', () => {
+  // 実際には起動せず、spawn の代わりに error を送れる子プロセスを返します
+  const child = new EventEmitter();
+  const calls = [];
+  const logs = [];
+  const exits = [];
+  const got = startServer({ HUB_PORT: '4400' }, {
+    spawnFn: (...args) => (calls.push(args), child),
+    log: (m) => logs.push(m),
+    exit: (code) => exits.push(code),
+  });
+  assert.equal(got, child);
+  assert.deepEqual(calls[0][1], ['--watch', 'server.js']);
+  assert.equal(calls[0][2].env.HUB_PORT, '4400');
+  // 受けていなければ、ここで処理されない error として例外になります
+  child.emit('error', Object.assign(new Error('spawn failed'), { code: 'EAGAIN' }));
+  assert.deepEqual(exits, [1]);
+  assert.match(logs[0], /EAGAIN/);
+});
+
+test('startServer は子プロセスが終わったら、同じ終了コードで終わる', () => {
+  const run = (code, signal) => {
+    const child = new EventEmitter();
+    const exits = [];
+    startServer({}, { spawnFn: () => child, log: () => {}, exit: (c) => exits.push(c) });
+    child.emit('exit', code, signal);
+    return exits;
+  };
+  assert.deepEqual(run(0, null), [0]);
+  assert.deepEqual(run(3, null), [3]);
+  assert.deepEqual(run(null, 'SIGTERM'), [1]);
 });

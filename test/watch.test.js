@@ -111,3 +111,24 @@ test('close の後は張り直さない', async () => {
   await sleep(50);
   assert.equal(watchers.length, 1);
 });
+
+test('フォルダ名の rename の通知では、同じ inode のフォルダでも監視を張り直す', async () => {
+  // 同じプロセスの中でフォルダを消してすぐ作り直すと inode が再利用され、作り直したフォルダが監視を始めたときと
+  // 同じものに見えることがあります。フォルダは消さずに、フォルダ自身の通知（ファイル名がフォルダ名）だけを送って再現します
+  const dir = fs.mkdtempSync(path.join(root, 'reuse-'));
+  const { watch, watchers } = fakeWatch();
+  const logs = [];
+  const seen = [];
+  const h = watchDir(dir, (_t, f) => seen.push(f), { retryMs: 10, watch, log: (m) => logs.push(m) });
+  try {
+    // フォルダの中のファイルの rename では張り直しません
+    watchers[0].cb('rename', 'a.jsonl');
+    assert.equal(watchers[0].closed, false);
+    watchers[0].cb('rename', path.basename(dir));
+    assert.ok(watchers[0].closed, 'フォルダ自身の通知を受けた監視は閉じる');
+    assert.ok(await waitFor(() => watchers.length === 2), '待ってから張り直す');
+    assert.deepEqual(seen, ['a.jsonl', path.basename(dir)]);
+  } finally {
+    h.close();
+  }
+});
