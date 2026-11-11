@@ -29,7 +29,7 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, proposalPauseNote, sendBlockReason } from './lib/queue.js';
+import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, clearFinished, proposalPauseNote, sendBlockReason } from './lib/queue.js';
 import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
 import * as tmux from './lib/tmux.js';
@@ -320,10 +320,10 @@ async function dispatchNext(id, { force = false } = {}) {
   const item = a.queue[0];
   try {
     if (item.clearFirst) {
-      const before = a.lastEventAt;
+      const before = a.sessionId;
       await tmux.sendText(a.paneId, '/clear');
-      // /clear で SessionStart が届くのを待ちます
-      for (let i = 0; i < 40 && store.get(id)?.lastEventAt === before; i++) await sleep(150);
+      // /clear で新しいセッションの SessionStart が届くのを待ちます（判定は lib/queue.js の clearFinished）
+      for (let i = 0; i < 40 && !clearFinished(before, store.get(id)); i++) await sleep(150);
       await sleep(400);
     }
     const cur = store.get(id);
