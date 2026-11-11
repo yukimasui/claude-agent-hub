@@ -1,6 +1,7 @@
 // タスクキューのパネルです。
 // 並べ替え（ドラッグ＆ドロップ / ↑↓）、編集、/clear の切り替え、削除、一時停止・再開ができます
 import { esc } from './md.js';
+import { isHandoffActive } from './handoff.js';
 
 // 先頭の判断が古くなったためにキューを一時停止したときの理由（queueNote）です。
 // サーバ（lib/queue.js の proposalPauseNote）が一時停止の理由に使い、画面は会話を読み込めず古いかどうかを判定できない間も、
@@ -17,14 +18,14 @@ function isBusy(agent) {
 
 /**
  * キューの表示を描き直すかどうかを判定するための値を返します（エージェントがなければ空文字）。
- * 表示に関わる値（キューの中身・一時停止の状態と理由・作業中か・判断待ちの提案）が変わったときだけ値が変わります。
+ * 表示に関わる値（キューの中身・一時停止の状態と理由・作業中か・判断待ちの提案・引き継ぎの実行中か）が変わったときだけ値が変わります。
  * openKey は「分からない」（undefined）と「判断待ちの提案がない」（null）で目印やボタンが変わるため、両者を別の値にします。
  * JSON.stringify は配列の中の undefined を null に変えてしまうため、undefined は別の文字列に置き換えています。
  * テストできるよう DOM には触れません。
  */
 export function queueSignature(agent, openKey) {
   if (!agent) return '';
-  return JSON.stringify([agent.id, agent.queue, agent.queuePaused, agent.queueNote, isBusy(agent), openKey === undefined ? '?' : openKey]);
+  return JSON.stringify([agent.id, agent.queue, agent.queuePaused, agent.queueNote, isBusy(agent), openKey === undefined ? '?' : openKey, isHandoffActive(agent.handoff)]);
 }
 
 /**
@@ -111,10 +112,15 @@ export function renderQueue(root, agent, op, openKey) {
   root.innerHTML = `<header class="queue-head">
       <b>キュー</b><span class="muted">${q.length}件</span>
       ${status}
-      <span class="q-actions">
+      ${
+        // 引き継ぎの間はサーバが一時停止の切り替えと送信を受け付けないため、押しても失敗するだけのボタンは出しません（終了後に元の状態へ戻ります）
+        isHandoffActive(agent.handoff)
+          ? ''
+          : `<span class="q-actions">
         ${resumeButtons(agent, openKey)}
         <button type="button" data-op="sendNext" ${q.length ? '' : 'disabled'} title="${esc(sendNextTitle(agent, openKey))}">先頭を今すぐ送信</button>
-      </span>
+      </span>`
+      }
     </header>
     <ol class="queue-list">
       ${q

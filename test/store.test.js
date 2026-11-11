@@ -301,6 +301,23 @@ test('init は agents.json とイベントファイルから状態を復元す�
   assert.equal(a.lastPrompt, '復元');
 });
 
+test('引き継ぎの段階は agents.json に保存し、再起動後は復元した状態から続きを判定できる', async () => {
+  const { handoffStep } = await import('../lib/handoff.js');
+  const { store, id, emit } = setup();
+  emit({ event: 'SessionStart', session_id: 'old' }, { event: 'Stop' });
+  const handoff = { stage: 'clear', marker: 'm', fromSession: 'old', sentAt: 1, clearSentAt: Date.now(), memoFile: '/m.md', prevPaused: false, prevNote: '' };
+  store.patch(id, { handoff });
+  // /clear の後のイベントです。SessionEnd（clear）に続いて新しいセッションの SessionStart が届きます
+  emit({ event: 'SessionEnd', reason: 'clear' }, { event: 'SessionStart', source: 'clear', session_id: 'new' });
+  const restored = new Store();
+  restored.init();
+  const a = restored.get(id);
+  assert.deepEqual(a.handoff, handoff);
+  assert.equal(a.sessionId, 'new');
+  assert.equal(a.state, 'idle');
+  assert.equal(handoffStep(a).type, 'resume');
+});
+
 test('publicAgent は対話要求の内部情報をクライアントに渡さない', () => {
   const { store, id, emit } = setup();
   writeRequest('r-pub', { tool_name: 'Write', tool_input: { file_path: 'x' }, input_hash: 'hh' });

@@ -496,4 +496,7 @@ test('キューの描き直しの判定値は、判断待ちの提案が「分�
   assert.notEqual(queueSignature(a, null), queueSignature({ ...a, state: 'running' }, null));
   assert.notEqual(queueSignature(a, null), queueSignature({ ...a, queue: [] }, null));
   assert.equal(queueSignature(null, undefined), '');
+  // 引き継ぎの開始・終了で、一時停止・再開のボタンの表示が変わるため描き直します
+  assert.notEqual(queueSignature(a, null), queueSignature({ ...a, handoff: { stage: 'memo' } }, null));
+  assert.equal(queueSignature(a, null), queueSignature({ ...a, handoff: { stage: 'done' } }, null));
 });
