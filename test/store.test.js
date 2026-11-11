@@ -231,6 +231,65 @@ test('ingest は途中までの行を持ち越し、壊れた行を読み飛ば�
   assert.equal(store.get(id).lastPrompt, '日本語のプロンプト');
 });
 
+/**
+ * statSync の直後に任意の処理を差し込んで ingest を呼びます。
+ * サイズを調べてから読むまでの間にファイルが消される、まれなタイミングを再現するためです。
+ */
+function ingestWithRace(store, id, race) {
+  const realStat = fs.statSync;
+  fs.statSync = (...args) => {
+    fs.statSync = realStat;
+    const st = realStat(...args);
+    race();
+    return st;
+  };
+  try {
+    store.ingest(id);
+  } finally {
+    fs.statSync = realStat;
+  }
+}
+
+test('ingest はサイズを調べた後にファイルやフォルダが消されても例外を出さず、次の読み込みで回復する', () => {
+  const { store, id, emit } = setup();
+  const file = store.eventsFile(id);
+  // 作り直したファイルが前回の読み込み位置より短くなるよう、最初の行を長くしておきます
+  emit({ event: 'SessionStart', session_id: 's1', transcript_path: `/tmp/${'x'.repeat(200)}.jsonl` });
+
+  fs.appendFileSync(file, JSON.stringify({ ts: 1, event: 'UserPromptSubmit', prompt: '消える前' }) + '\n');
+  assert.doesNotThrow(() => ingestWithRace(store, id, () => fs.rmSync(file)));
+  assert.equal(store.get(id).state, 'idle');
+
+  // ファイルが作り直されたら、次の読み込みで先頭から読み直します
+  let a = emit({ event: 'UserPromptSubmit', prompt: '作り直した後' });
+  assert.equal(a.state, 'running');
+  assert.equal(a.lastPrompt, '作り直した後');
+
+  // フォルダごと消された場合も同じです
+  fs.appendFileSync(file, JSON.stringify({ ts: 2, event: 'Stop' }) + '\n');
+  assert.doesNotThrow(() => ingestWithRace(store, id, () => fs.rmSync(EVENTS_DIR, { recursive: true })));
+  assert.equal(store.get(id).state, 'running');
+  fs.mkdirSync(EVENTS_DIR, { recursive: true });
+  a = emit({ event: 'Stop' });
+  assert.equal(a.state, 'done');
+});
+
+test('ingest はサイズを調べた後にファイルが短く作り直されても、実際に読めた分だけ読み進める', () => {
+  const { store, id } = setup();
+  const file = store.eventsFile(id);
+  const line = (ev) => JSON.stringify({ ts: 1, ...ev }) + '\n';
+  fs.appendFileSync(file, line({ event: 'SessionStart', session_id: 's1' }) + line({ event: 'UserPromptSubmit', prompt: '古いファイル' }));
+  ingestWithRace(store, id, () => fs.writeFileSync(file, line({ event: 'SessionStart', session_id: 's2' })));
+  assert.equal(store.get(id).sessionId, 's2');
+  assert.equal(store.get(id).state, 'idle');
+
+  // 作り直したファイルの続きを、読み飛ばさずに取り込むこと
+  fs.appendFileSync(file, line({ event: 'UserPromptSubmit', prompt: '新しいファイル' }));
+  store.ingest(id);
+  assert.equal(store.get(id).state, 'running');
+  assert.equal(store.get(id).lastPrompt, '新しいファイル');
+});
+
 test('init は agents.json とイベントファイルから状態を復元する', () => {
   const { id, emit } = setup();
   emit({ event: 'SessionStart', session_id: 'restored' }, { event: 'UserPromptSubmit', prompt: '復元' }, { event: 'Stop' });
