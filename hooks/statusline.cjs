@@ -10,37 +10,68 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn } = require('child_process');
 
 // 利用者のコマンドに渡すときに付ける目印です。利用者の設定がこのスクリプト自身を指していても、呼び出しが繰り返されないようにします
 const NESTED_ENV = 'AGENT_HUB_STATUSLINE_NESTED';
 // 利用者のコマンドを待つ上限です。止まったままのコマンドで、このスクリプトのプロセスが残り続けないようにします
 const PASS_TIMEOUT_MS = 5000;
+// 打ち切りで SIGTERM を送ってから、終わらないプロセスに SIGKILL を送るまでの猶予です。後始末の時間を少しだけ与えつつ、表示を長く止めないためです
+const KILL_GRACE_MS = 500;
+// usage.json の更新の排他に使うロックを待つ上限です。ステータスラインの表示を遅らせないよう、取れなければ今回の記録はあきらめます。
+// 値は次の更新（応答のたびに届きます）で記録されるため、1 回分を記録しなくても表示が一時的に古くなるだけです
+const LOCK_WAIT_MS = 150;
+// これより古いロックは、持ち主が終了した（Claude Code に打ち切られたなど）ものとして取り除きます。
+// ロックを持つ間は小さなファイルを読み書きするだけで、通常は数ミリ秒で終わるため、十分に長い値にしています
+const LOCK_STALE_MS = 2000;
 // 同じ枠（リセットの時刻が同じ）かを判定するときの許容幅です。サーバの丸めで時刻が少しずれても同じ枠として扱います
 const SAME_WINDOW_MS = 60 * 1000;
 // 応答の有無を覚えておくエージェントの数の上限です。削除したエージェントの分で記録が増え続けないようにします
 const MAX_SEEN = 50;
+// 入力の rate_limits の枠と、記録での名前です。spend_limit は Claude apps ゲートウェイが設定した利用額の上限です
 const WINDOWS = [
   ['five_hour', 'fiveHour'],
   ['seven_day', 'sevenDay'],
+  ['spend_limit', 'spendLimit'],
 ];
+// spend_limit の period として受け付ける値です（Claude Code の文書に記載の値）。未知の値は記録しません
+const SPEND_PERIODS = ['daily', 'weekly', 'monthly'];
+// 利用額の項目です。使用率とは別の間隔で届き、欠けることがあるため、まとめて扱います
+const SPEND_FIELDS = ['usedUsd', 'limitUsd', 'period'];
 
-/** 入力の 1 つの枠（{ used_percentage, resets_at }。resets_at は Unix 秒）を記録の形にします。読めない値は null です */
-function pickWindow(w, receivedAt, agentId) {
+const isAmount = (v) => typeof v === 'number' && Number.isFinite(v) && v >= 0;
+
+/**
+ * spend_limit の利用額（used_usd・limit_usd）と期間（period）を記録の形にします。
+ * 文書では、これらは使用率より後に別の要求で届き、欠けることがあるとされています。利用額は 2 つがそろって読めるときだけ、
+ * 期間は既知の値のときだけ記録し、未知の形の値で誤った表示をしないようにします
+ */
+function pickSpend(w) {
+  const out = {};
+  if (isAmount(w.used_usd) && isAmount(w.limit_usd)) Object.assign(out, { usedUsd: w.used_usd, limitUsd: w.limit_usd });
+  if (SPEND_PERIODS.includes(w.period)) out.period = w.period;
+  return out;
+}
+
+/**
+ * 入力の 1 つの枠（{ used_percentage, resets_at }。resets_at は Unix 秒）を記録の形にします。読めない値は null です。
+ * withSpend のときは、spend_limit の利用額と期間も取り出します
+ */
+function pickWindow(w, receivedAt, agentId, { withSpend = false } = {}) {
   if (!w || typeof w !== 'object') return null;
   const used = Number(w.used_percentage);
   const resets = Number(w.resets_at);
   if (w.used_percentage == null || w.resets_at == null || !Number.isFinite(used) || !Number.isFinite(resets)) return null;
-  return { usedPercentage: used, resetsAt: resets * 1000, receivedAt, ...(agentId ? { agentId } : {}) };
+  return { usedPercentage: used, resetsAt: resets * 1000, receivedAt, ...(agentId ? { agentId } : {}), ...(withSpend ? pickSpend(w) : {}) };
 }
 
-/** 入力から 5 時間の枠と週の枠を取り出します。どちらもなければ（API キーでの利用、最初の応答の前など）null です */
+/** 入力から 5 時間の枠・週の枠・利用額の上限を取り出します。どれもなければ（API キーでの利用、最初の応答の前など）null です */
 function pickRateLimits(input, receivedAt, agentId) {
   const rl = input && typeof input === 'object' ? input.rate_limits : null;
   if (!rl || typeof rl !== 'object') return null;
   const out = {};
   for (const [src, key] of WINDOWS) {
-    const w = pickWindow(rl[src], receivedAt, agentId);
+    const w = pickWindow(rl[src], receivedAt, agentId, { withSpend: key === 'spendLimit' });
     if (w) out[key] = w;
   }
   return Object.keys(out).length ? out : null;
@@ -59,11 +90,23 @@ function mergeWindow(prev, next, { fresh = true } = {}) {
   if (!prev) return next;
   if (next.resetsAt > prev.resetsAt + SAME_WINDOW_MS) return next;
   if (next.resetsAt < prev.resetsAt - SAME_WINDOW_MS) return prev;
-  if (next.usedPercentage > prev.usedPercentage) return next;
-  return fresh && next.usedPercentage === prev.usedPercentage ? next : prev;
+  if (next.usedPercentage > prev.usedPercentage) return withSpendOf(next, prev);
+  return fresh && next.usedPercentage === prev.usedPercentage ? withSpendOf(next, prev) : withSpendOf(prev, next);
 }
 
-/** 記録（{ fiveHour, sevenDay }）に新しく受け取った値を反映した枠を返します。fresh は mergeWindow と同じです */
+/**
+ * 同じ枠の 2 つの値のうち、残すほう（kept）に利用額がなく、もう一方（other）にあれば、その利用額と期間を引き継ぎます。
+ * 利用額は使用率より遅れて届くため、使用率だけの新しい値で、先に届いていた利用額を消さないようにします。
+ * 引き継ぐものがなければ kept をそのまま返します
+ */
+function withSpendOf(kept, other) {
+  if (kept.usedUsd != null || other.usedUsd == null) return kept;
+  const out = { ...kept };
+  for (const k of SPEND_FIELDS) if (other[k] != null) out[k] = other[k];
+  return out;
+}
+
+/** 記録（{ fiveHour, sevenDay, spendLimit }）に新しく受け取った値を反映した枠を返します。fresh は mergeWindow と同じです */
 function mergeUsage(prev, next, { fresh = true } = {}) {
   const out = {};
   for (const [, key] of WINDOWS) {
@@ -121,20 +164,86 @@ function readJson(file) {
   }
 }
 
+/**
+ * 一時ファイルに書いてから名前を付け替えます。読む側（サーバやほかのエージェント）に書きかけの内容が見えないようにするためです。
+ * 一時ファイルの名前にはプロセス ID を含め、同時に書くほかのプロセスの一時ファイルと重ならないようにします
+ */
 function writeJsonAtomic(file, data) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data));
-  fs.renameSync(tmp, file);
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data));
+    fs.renameSync(tmp, file);
+  } catch (e) {
+    try {
+      fs.unlinkSync(tmp);
+    } catch {}
+    throw e;
+  }
+}
+
+// ロックを待つ間の短い待機です。このスクリプトは同期的に処理するため、イベントループを使わずに眠ります
+const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+/**
+ * ロックファイル（排他的な作成で取ります）を取ってから fn を実行し、その戻り値を返します。
+ * 複数のエージェントが同時に「読み込み・まとめ・書き込み」をすると、後の書き込みが先の更新を上書きして失われるためです。
+ * ステータスラインの表示を遅らせないよう、waitMs までに取れなければ fn を実行せずに undefined を返します。
+ * staleMs より古いロックは、持ち主が途中で終了したものとして取り除きます（取り除く直前に別のプロセスが取り直した場合は
+ * 2 つが同時に書くことがありえますが、その影響は排他がない場合と同じく 1 回分の更新が失われるだけで、次の更新で戻ります）。
+ * 解放するときは、中身の目印が自分のものである場合だけ消し、取り除かれた後に別のプロセスが取ったロックを消さないようにします。
+ */
+function withLock(lockFile, fn, { waitMs = LOCK_WAIT_MS, staleMs = LOCK_STALE_MS } = {}) {
+  const token = `${process.pid}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+  const deadline = Date.now() + waitMs;
+  // すぐに取り直す場合（解放された・古いロックを取り除いた）も含め、毎回待ち時間の上限を確かめます。
+  // 取り除けないロック（同じ名前のディレクトリなど）があっても、待ち続けないようにするためです
+  for (let first = true; ; first = false) {
+    if (!first && Date.now() >= deadline) return undefined;
+    try {
+      fs.writeFileSync(lockFile, token, { flag: 'wx' });
+      break;
+    } catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+    }
+    let stale;
+    try {
+      // 時計が戻ると更新時刻が未来になり、差が負のまま古いと判定できなくなるため、差の大きさで判定します
+      stale = Math.abs(Date.now() - fs.statSync(lockFile).mtimeMs) > staleMs;
+    } catch {
+      // 確かめる間に持ち主が解放した場合です。すぐに取り直します
+      continue;
+    }
+    if (stale) {
+      try {
+        fs.unlinkSync(lockFile);
+      } catch {}
+      continue;
+    }
+    sleepSync(5 + Math.floor(Math.random() * 10));
+  }
+  try {
+    return fn();
+  } finally {
+    try {
+      if (fs.readFileSync(lockFile, 'utf8') === token) fs.unlinkSync(lockFile);
+    } catch {}
+  }
 }
 
 /**
  * 入力の rate_limits を記録に反映します。記録には枠のほかに、応答の有無の判断に使うエージェントごとの前回の値（seen）を残します。
- * 古い値が届いて記録が変わらない場合は書き込みません。書き込んだかどうかを返します
+ * 古い値が届いて記録が変わらない場合と、ロックを取れなかった場合は書き込みません。書き込んだかどうかを返します。
+ * lock は withLock の待ち時間などの指定です（テストで変えるために受け付けます）
  */
-function recordUsage(file, input, { now = Date.now(), agentId } = {}) {
+function recordUsage(file, input, { now = Date.now(), agentId, lock } = {}) {
   const next = pickRateLimits(input, now, agentId);
   if (!next) return false;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  return withLock(`${file}.lock`, () => mergeInto(file, next, input, { now, agentId }), lock) === true;
+}
+
+/** ロックを取った状態で、記録を読み直して新しい値を反映します。記録が変わらなければ書き込まずに false を返します */
+function mergeInto(file, next, input, { now, agentId }) {
   const prev = readJson(file);
   const prevSeen = prev && typeof prev === 'object' ? prev.seen : null;
   const apiMs = apiDurationOf(input);
@@ -164,16 +273,109 @@ function userStatusLine({ projectDir, env = process.env, homedir = os.homedir() 
   return null;
 }
 
-/** 利用者のコマンドに同じ入力を渡して実行し、出力をそのまま表示します。戻り値はコマンドの終了コードです */
-function passThrough(command, raw, env = process.env) {
-  const r = spawnSync(command, {
-    shell: true,
-    input: raw,
-    stdio: ['pipe', 'inherit', 'inherit'],
-    env: { ...env, [NESTED_ENV]: '1' },
-    timeout: PASS_TIMEOUT_MS,
+// プロセスグループごとに終了させられるか（POSIX のシステムか）です。Windows にはプロセスグループのシグナルがないため、起動したプロセスだけを終了させます
+const USE_PROCESS_GROUP = process.platform !== 'win32';
+
+/** プロセスがまだ残っているかを確かめます。グループの場合は pid に負の値を渡します */
+function alive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM は存在するが送れない場合です。自分が起動したグループでは通常起こりませんが、残っているものとして扱います
+    return e.code === 'EPERM';
+  }
+}
+
+/** 起動したプロセス（POSIX ではそのプロセスグループ全体）にシグナルを送ります。すでに終わっている場合などの失敗は無視します */
+function signalTree(child, signal) {
+  try {
+    if (USE_PROCESS_GROUP) process.kill(-child.pid, signal);
+    else child.kill(signal);
+  } catch {}
+}
+
+/**
+ * 利用者のコマンドに同じ入力を渡して実行し、出力をそのまま表示します。終了コードで解決する Promise を返します。
+ * - POSIX では新しいプロセスグループ（detached。setsid により新しいセッションになります）で起動します。打ち切るときにシェルだけでなく、
+ *   シェルが起動したコマンド（孫プロセス）もまとめて終了させ、Claude Code の出力のパイプを持ったまま残らないようにするためです。
+ *   終了させるのは自分が起動したグループだけで、このスクリプトや Claude Code が属するグループには送りません。
+ *   新しいセッションでは制御端末（/dev/tty）を使えませんが、ステータスラインの出力はもともとパイプに書かれるため表示には影響しません
+ *   （Claude Code の文書でも、端末の大きさは tput ではなく環境変数 COLUMNS・LINES から読むよう案内されています）
+ * - timeoutMs を過ぎたら SIGTERM を送り、KILL_GRACE_MS 待っても残っていれば SIGKILL を送ります。打ち切った場合の終了コードは 0 です
+ * - このスクリプト自身が終了を求められた（Claude Code が更新のために実行中のスクリプトを打ち切るなど）場合も、グループを終了させてから終わります
+ * stdout と graceMs（強制終了までの猶予）は、テストで変えるために受け付けます。
+ */
+function passThrough(command, raw, { env = process.env, timeoutMs = PASS_TIMEOUT_MS, graceMs = KILL_GRACE_MS, stdout = 'inherit' } = {}) {
+  return new Promise((resolve) => {
+    let child;
+    try {
+      child = spawn(command, {
+        shell: true,
+        detached: USE_PROCESS_GROUP,
+        stdio: ['pipe', stdout, 'inherit'],
+        env: { ...env, [NESTED_ENV]: '1' },
+      });
+    } catch {
+      resolve(0);
+      return;
+    }
+    const signals = ['SIGTERM', 'SIGINT', 'SIGHUP'];
+    let done = false;
+    let timer = null;
+    const unlisten = () => {
+      for (const s of signals) process.removeListener(s, onSignal);
+    };
+    const finish = (code) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      unlisten();
+      resolve(code);
+    };
+    // グループを終了させ、残っていれば猶予の後に強制終了します。シェルが先に終わっても孫プロセスが残りうるため、グループの有無で確かめます
+    const stop = (then) => {
+      signalTree(child, 'SIGTERM');
+      const target = USE_PROCESS_GROUP ? -child.pid : child.pid;
+      const started = Date.now();
+      const check = () => {
+        if (!alive(target)) return then();
+        if (Date.now() - started >= graceMs) {
+          signalTree(child, 'SIGKILL');
+          return then();
+        }
+        setTimeout(check, 20);
+      };
+      check();
+    };
+    // 打ち切りの後始末（stop）の途中で届いたシグナルは、done により何もしません。処理を外さずに残しておくことで、
+    // 既定の動作で途中終了せず、猶予の後の SIGKILL まで進めてからグループを残さずに終わります
+    function onSignal() {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      stop(() => process.exit(0));
+    }
+    for (const s of signals) {
+      try {
+        process.on(s, onSignal);
+      } catch {}
+    }
+    child.on('error', () => finish(0));
+    child.on('exit', (code) => finish(typeof code === 'number' ? code : 0));
+    // 入力を読まずに終わるコマンドでは書き込みが EPIPE になるため、エラーは無視します
+    child.stdin.on('error', () => {});
+    child.stdin.end(raw);
+    timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      // シグナルの処理は stop が終わるまで外しません（onSignal の説明を参照）
+      stop(() => {
+        unlisten();
+        resolve(0);
+      });
+    }, timeoutMs);
   });
-  return typeof r.status === 'number' ? r.status : 0;
 }
 
 function main() {
@@ -181,7 +383,7 @@ function main() {
   // 標準入力の読み込みに失敗しても、落ちずに何も表示せず終わります（hub-hook.cjs と同じ考え方です）
   process.stdin.on('error', () => process.exit(0));
   process.stdin.on('data', (c) => chunks.push(c));
-  process.stdin.on('end', () => {
+  process.stdin.on('end', async () => {
     const raw = Buffer.concat(chunks);
     let input = null;
     try {
@@ -195,6 +397,8 @@ function main() {
       } catch {}
     }
     let code = 0;
+    // 利用者のコマンドの待機中は、ほかの処理で落ちないようにします。万一の例外でも表示の処理を壊さず終了コード 0 で終わります
+    process.on('uncaughtException', () => process.exit(0));
     if (!process.env[NESTED_ENV]) {
       try {
         // プロジェクトの設定は、Claude Code が読む場所（起動時の作業ディレクトリ。入力の workspace.project_dir）だけを見ます。
@@ -203,13 +407,13 @@ function main() {
         const pd = input && input.workspace ? input.workspace.project_dir : null;
         const projectDir = typeof pd === 'string' && pd ? pd : null;
         const command = userStatusLine({ projectDir });
-        if (command) code = passThrough(command, raw);
+        if (command) code = await passThrough(command, raw);
       } catch {}
     }
     process.exit(code);
   });
 }
 
-module.exports = { NESTED_ENV, mergeUsage, mergeWindow, pickRateLimits, recordUsage, userStatusLine };
+module.exports = { NESTED_ENV, mergeUsage, mergeWindow, passThrough, pickRateLimits, recordUsage, userStatusLine, withLock };
 
 if (require.main === module) main();

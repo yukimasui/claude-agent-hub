@@ -55,7 +55,7 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 .usage-row { min-width: 0; display: grid; grid-template-columns: 34px 1fr 44px; align-items: center; column-gap: 8px; --lv: var(--idle); }
 .usage-row.lv-warn { --lv: var(--running); }
 .usage-row.lv-high { --lv: var(--waiting); }
-.usage-label { color: var(--text); }
+.usage-label { color: var(--text); white-space: nowrap; }
 .usage-bar { height: 8px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
 .usage-bar > i { display: block; height: 100%; background: var(--lv); }
 .usage-pct { font-family: var(--mono); color: var(--text); text-align: right; white-space: nowrap; }

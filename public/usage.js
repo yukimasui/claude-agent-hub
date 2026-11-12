@@ -1,4 +1,4 @@
-// 利用上限（5 時間の枠と週の枠）の使用率の表示の組み立てです。
+// 利用上限（5 時間の枠と週の枠、Claude apps ゲートウェイの利用額の上限）の使用率の表示の組み立てです。
 // 単体テストで確かめられるよう、DOM に触れない関数だけを置き、HTML への書き出しは app.js が行います。
 // 時刻の表記はブラウザの地域の時刻（Date の getHours など）で行います。
 
@@ -10,6 +10,10 @@ export const USAGE_WINDOWS = [
   { key: 'fiveHour', label: '5時間', name: '5 時間の枠' },
   { key: 'sevenDay', label: '週', name: '週の枠' },
 ];
+
+// Claude apps ゲートウェイの利用額の上限です。値があるときだけ、5 時間の枠・週の枠の後に同じ形のバーで表示します
+const SPEND_WINDOW = { key: 'spendLimit', label: '利用額', name: '利用額の上限' };
+const PERIOD_LABELS = { daily: '日ごと', weekly: '週ごと', monthly: '月ごと' };
 
 // この使用率以上で、バーの色を注意・警告の色に変えます
 const WARN_AT = 70;
@@ -53,39 +57,70 @@ export function formatAgo(ts, now) {
   return `${Math.floor(min / 1440)}日前`;
 }
 
+/** 米ドルの金額の表記です。端数があれば小数 2 桁にします（例: 「$500」「$314.10」「$1,234.56」） */
+export function formatUsd(v) {
+  const digits = Number.isInteger(v) ? 0 : 2;
+  return `$${v.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
 /**
- * 枠ごとの表示内容を返します。usage はサーバから届く { fiveHour, sevenDay }（値のない枠は null）です。
+ * 1 つの枠の表示内容です。spend は利用額の上限の枠のときに、利用額（「$314.12 / $500」。なければ空文字）を渡します。
+ * 利用額は detail としてバーとリセットの時刻の行の間に 1 行で表示します。リセットの時刻の行に続けると、狭いサイドバーで
+ * 残り時間が省略されて見えなくなるためです
+ */
+function windowRow({ key, label, name, period = '' }, w, now, spend = '') {
+  const ariaLabel = `${name}の使用率`;
+  if (!w) return { key, label, ariaLabel, status: 'unknown', text: '不明', title: `${name}の使用率はまだ受け取っていません` };
+  const received = `受け取り: ${formatClock(w.receivedAt, now)}（${formatAgo(w.receivedAt, now)}）`;
+  const stale = now - w.receivedAt > USAGE_STALE_MS;
+  if (now >= w.resetsAt) {
+    return {
+      key, label, ariaLabel, status: 'reset', stale, text: 'リセット済み',
+      reset: `${formatClock(w.resetsAt, now)} にリセット`,
+      title: `${name}は ${formatClock(w.resetsAt, now)} にリセットされました。新しい使用率はエージェントが次に応答したときに届きます\n${received}`,
+    };
+  }
+  const percent = Math.round(w.usedPercentage);
+  const width = Math.min(100, Math.max(0, w.usedPercentage));
+  const reset = `${formatClock(w.resetsAt, now)} にリセット（あと${formatRemaining(w.resetsAt - now)}）`;
+  const detail = spend ? (period ? `${spend}（${period}）` : spend) : '';
+  // 利用額は使用率とは別に約 5 分ごとに届く推定値で、使用率と一時的に食い違うことがあるため、詳細にその旨を添えます
+  const spendNote = spend ? `\n${spend}（推定。使用率より遅れて届くため、一時的に食い違うことがあります）` : '';
+  return {
+    key, label, ariaLabel, status: 'ok', stale, percent, width, level: usageLevel(w.usedPercentage), text: `${percent}%`, reset,
+    ...(detail ? { detail } : {}),
+    title: `${name}: ${percent}% 使用${spendNote}\n${reset}\n${received}${stale ? '\n受け取ってから時間がたっています。ハブの外での利用分は反映されていない場合があります' : ''}`,
+  };
+}
+
+/** 利用額の上限の枠の表示内容です。期間が分かれば名前と利用額の行に添えます（例: 「利用額の上限（月ごと）」） */
+function spendRow(w, now) {
+  const period = PERIOD_LABELS[w.period] || '';
+  const name = period ? `${SPEND_WINDOW.name}（${period}）` : SPEND_WINDOW.name;
+  const spend = typeof w.usedUsd === 'number' && typeof w.limitUsd === 'number' ? `${formatUsd(w.usedUsd)} / ${formatUsd(w.limitUsd)}` : '';
+  return windowRow({ ...SPEND_WINDOW, name, period }, w, now, spend);
+}
+
+/**
+ * 枠ごとの表示内容を返します。usage はサーバから届く { fiveHour, sevenDay, spendLimit }（値のない枠は null）です。
  * - status が 'ok': 使用率のバーを出します。percent は表記用に丸めた値、width はバーの幅（0〜100 に収めた値）です
  * - status が 'unknown': その枠の値を受け取っていません
  * - status が 'reset': リセットの時刻を過ぎています。使用率は戻っているはずですが、新しい値が届くまでは分からないため、バーを出しません
- * stale は、受け取ってから USAGE_STALE_MS を過ぎているかです。
+ * stale は、受け取ってから USAGE_STALE_MS を過ぎているかです。ariaLabel はバーの読み上げ用の名前です。
+ * detail は、バーとリセットの時刻の間に表示する補足（利用額の上限の利用額）で、ない枠では含めません。
+ * 利用額の上限の枠は、値があるときだけ最後に加えます（ゲートウェイを使わない環境では従来どおり 5 時間の枠と週の枠だけです）。
+ * 利用額の上限だけがあり 5 時間の枠・週の枠がない場合は、それらを「不明」として並べません。ゲートウェイ経由の利用では
+ * 届かない値で、いつまでも「不明」が並ぶと、受け取りに失敗しているように見えるためです。
  */
 export function usageRows(usage, now) {
-  return USAGE_WINDOWS.map(({ key, label, name }) => {
-    const w = usage?.[key];
-    if (!w) return { key, label, status: 'unknown', text: '不明', title: `${name}の使用率はまだ受け取っていません` };
-    const received = `受け取り: ${formatClock(w.receivedAt, now)}（${formatAgo(w.receivedAt, now)}）`;
-    const stale = now - w.receivedAt > USAGE_STALE_MS;
-    if (now >= w.resetsAt) {
-      return {
-        key, label, status: 'reset', stale, text: 'リセット済み',
-        reset: `${formatClock(w.resetsAt, now)} にリセット`,
-        title: `${name}は ${formatClock(w.resetsAt, now)} にリセットされました。新しい使用率はエージェントが次に応答したときに届きます\n${received}`,
-      };
-    }
-    const percent = Math.round(w.usedPercentage);
-    const width = Math.min(100, Math.max(0, w.usedPercentage));
-    const reset = `${formatClock(w.resetsAt, now)} にリセット（あと${formatRemaining(w.resetsAt - now)}）`;
-    return {
-      key, label, status: 'ok', stale, percent, width, level: usageLevel(w.usedPercentage), text: `${percent}%`, reset,
-      title: `${name}: ${percent}% 使用\n${reset}\n${received}${stale ? '\n受け取ってから時間がたっています。ハブの外での利用分は反映されていない場合があります' : ''}`,
-    };
-  });
+  const spend = usage?.spendLimit;
+  const planRows = spend && !USAGE_WINDOWS.some(({ key }) => usage[key]) ? [] : USAGE_WINDOWS.map((def) => windowRow(def, usage?.[def.key], now));
+  return spend ? [...planRows, spendRow(spend, now)] : planRows;
 }
 
-/** 受け取った時刻の表記です（2 つの枠のうち新しいほう）。値がなければ空文字です */
+/** 受け取った時刻の表記です（値のある枠のうち新しいもの）。値がなければ空文字です */
 export function usageReceivedLabel(usage, now) {
-  const times = USAGE_WINDOWS.map(({ key }) => usage?.[key]?.receivedAt).filter((t) => typeof t === 'number');
+  const times = [...USAGE_WINDOWS, SPEND_WINDOW].map(({ key }) => usage?.[key]?.receivedAt).filter((t) => typeof t === 'number');
   if (!times.length) return '';
   return `受け取り: ${formatAgo(Math.max(...times), now)}`;
 }

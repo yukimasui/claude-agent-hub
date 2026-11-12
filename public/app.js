@@ -190,17 +190,18 @@ function renderUsage() {
   const now = Date.now();
   let html;
   if (!usage) {
-    html = `<div class="usage-empty" title="claude.ai のプランでログインしたエージェントが応答すると、5 時間の枠と週の枠の使用率を表示します。API キーでの利用では表示されません">利用上限: 不明（まだ受け取っていません）</div>`;
+    html = `<div class="usage-empty" title="claude.ai のプランでログインしたエージェントが応答すると、5 時間の枠と週の枠の使用率を表示します（Claude apps ゲートウェイで利用額の上限が設定されている場合は、その使用率を表示します）。API キーでの利用では表示されません">利用上限: 不明（まだ受け取っていません）</div>`;
   } else {
     const rows = usageRows(usage, now)
       .map((r) => {
         // 値のない枠とリセットを過ぎた枠は、誤った使用率に見えないようバーを出さず、状態の文言だけを表示します
         const body =
           r.status === 'ok'
-            ? `<div class="usage-bar" role="meter" aria-label="${esc(r.label)}の枠の使用率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${r.percent}"><i style="width:${r.width}%"></i></div><span class="usage-pct">${esc(r.text)}</span>`
+            ? `<div class="usage-bar" role="meter" aria-label="${esc(r.ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${r.percent}"><i style="width:${r.width}%"></i></div><span class="usage-pct">${esc(r.text)}</span>`
             : `<span class="usage-note">${esc(r.text)}</span>`;
         return `<div class="usage-row is-${r.status}${r.level ? ` lv-${r.level}` : ''}${r.stale ? ' stale' : ''}" title="${esc(r.title)}">
           <span class="usage-label">${esc(r.label)}</span>${body}
+          ${r.detail ? `<span class="usage-reset">${esc(r.detail)}</span>` : ''}
           ${r.reset ? `<span class="usage-reset">${esc(r.reset)}</span>` : ''}
         </div>`;
       })
