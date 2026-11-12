@@ -7,6 +7,7 @@ import { closeBoard, findOpenProposals, isDone, openBoard, parseProposals, propo
 import { thumbsHtml } from './images.js';
 import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
 import { contextOver, contextTitle, formatContext, handoffBlockReason, handoffStageLabel, isHandoffActive } from './handoff.js';
+import { effortChangeBlockReason } from './effort.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -281,8 +282,8 @@ function renderDetail() {
   }
   $('#d-name').textContent = a.name;
   const mode = a.currentMode ? ` · mode: ${a.currentMode}` : '';
-  const effort = a.effort ? ` · effort: ${a.effort}` : '';
-  $('#d-meta').textContent = `${a.model}${effort}${mode} · ${a.cwd} · ${a.sessionId?.slice(0, 8) ?? ''}`;
+  // エフォートは右上の選択欄に表示するので、ここには載せません
+  $('#d-meta').textContent = `${a.model}${mode} · ${a.cwd} · ${a.sessionId?.slice(0, 8) ?? ''}`;
   $('#d-meta').title = `${a.cwd}\nsession: ${a.sessionId}`;
   const since = a.state === 'running' ? a.turnStartedAt : a.stateSince;
   // ステータス行の要素は作り直さずに中身だけ更新します（猫の動きが途切れないように）
@@ -295,6 +296,7 @@ function renderDetail() {
   $('#btn-restart').disabled = a.alive;
   renderContext(a);
   renderHandoff(a);
+  renderEffort(a);
   $('#btn-send').disabled = !a.alive;
   for (const b of document.querySelectorAll('[data-key]')) b.disabled = !a.alive;
   for (const b of document.querySelectorAll('[data-tab]')) b.classList.toggle('active', b.dataset.tab === tab);
@@ -312,6 +314,20 @@ function renderContext(a) {
   el.classList.toggle('warn', over);
   el.textContent = over ? `${text} ⚠ 切り替え推奨` : text;
   el.title = contextTitle(a.contextTokens, hubInfo.contextWarnTokens);
+}
+
+/** エフォートの選択欄です。変更できない間は無効にし、理由を添えます */
+function renderEffort(a) {
+  const sel = $('#d-effort');
+  // 開いている選択欄の値を、画面の更新で書き換えないようにします
+  if (document.activeElement !== sel) sel.value = a.effort || '';
+  const reason = effortChangeBlockReason(a);
+  sel.disabled = !!reason;
+  $('#d-effort-label').title = reason
+    ? `変更できません: ${reason}`
+    : a.alive
+      ? '変更すると、会話を引き継いだまま新しいエフォートでエージェントを起動し直します'
+      : 'プロセスは終了しています。変更した値は次の再起動で使われます';
 }
 
 /** 「引き継いでリセット」のボタンと、段階・結果の表示です */
@@ -751,6 +767,34 @@ $('#btn-handoff-dismiss').addEventListener('click', async () => {
     await api('POST', `/api/agents/${a.id}/handoff`, { op: 'dismiss' });
   } catch (e) {
     toast(e.message);
+  }
+});
+$('#d-effort').addEventListener('change', async (e) => {
+  const sel = e.target;
+  const a = selected();
+  if (!a) return;
+  const effort = sel.value;
+  const label = effort || 'ユーザー設定に従う';
+  // 動いているエージェントは起動し直すため、実行中のバックグラウンドの処理が止まることなどを確かめてもらいます
+  if (
+    a.alive &&
+    !confirm(
+      `「${a.name}」のエフォートを「${label}」に変更しますか？\n\n` +
+        '会話を引き継いだまま、新しいエフォートでエージェントを起動し直します（数秒かかります）。\n' +
+        'バックグラウンドで動いている処理は止まり、ターミナルで変えた権限モードやモデルは起動時の値に戻ります。',
+    )
+  ) {
+    sel.value = a.effort || '';
+    sel.blur();
+    return;
+  }
+  sel.blur();
+  try {
+    await api('POST', `/api/agents/${a.id}/effort`, { effort });
+    toast(a.alive ? `エフォートを「${label}」にして起動し直しています` : `エフォートを「${label}」に変更しました。次の再起動で使われます`);
+  } catch (err) {
+    sel.value = a.effort || '';
+    toast(err.message);
   }
 });
 $('#btn-restart').addEventListener('click', async () => {

@@ -101,7 +101,10 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 .tabs { display: flex; gap: 2px; background: var(--bg); padding: 2px; border-radius: 8px; }
 .tab { border: none; background: none; }
 .tab.active { background: var(--panel-2); }
-.actions { display: flex; gap: 6px; }
+.actions { display: flex; gap: 6px; align-items: center; }
+.effort-pick { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--muted); }
+.effort-pick select { background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; font-size: 13px; color: var(--text); }
+.effort-pick select:disabled { opacity: 0.4; }
 
 .status-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; border-bottom: 1px solid var(--line); font-size: 13px; min-height: 34px; }
 .status-bar .act { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; font-family: var(--mono); font-size: 12px; }

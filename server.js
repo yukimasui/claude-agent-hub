@@ -32,8 +32,9 @@ import { buildOutput } from './lib/interactions.js';
 import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, clearFinished, clearPauseNote, proposalPauseNote, sendBlockReason } from './lib/queue.js';
 import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
+import { effortChangeBlockReason, effortToFollow, isEffortValue } from './public/effort.js';
 import * as tmux from './lib/tmux.js';
-import { readContextTokens, readTranscript, readTranscriptImage } from './lib/transcript.js';
+import { readContextTokens, readEffortChange, readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, listen, listenErrorMessage, sendImage, serveStatic } from './lib/http.js';
 import { watchDir } from './lib/watch.js';
@@ -85,8 +86,6 @@ function resolveDir(p) {
 
 // 空文字はユーザー設定に従います（フラグを渡しません）
 const PERMISSION_MODES = new Set(['manual', 'acceptEdits', 'auto', 'plan']);
-// Claude Code の --effort が受け付ける値です（空文字はユーザー設定に従い、フラグを渡しません）
-const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 // ステータス表示の猫の毛色です（空文字はおまかせ）
 const COATS = new Set(['orange', 'gray', 'cream', 'siamese', 'black', 'calico']);
 
@@ -95,7 +94,8 @@ async function createAgent(body) {
   const model = String(body.model || DEFAULT_MODEL).trim();
   if (!/^[\w.:\[\]-]+$/.test(model)) throw httpError(400, 'モデル名が不正です');
   const permissionMode = PERMISSION_MODES.has(body.permissionMode) ? body.permissionMode : '';
-  const effort = EFFORT_LEVELS.has(body.effort) ? body.effort : '';
+  // 空文字はユーザー設定に従い、--effort を付けません
+  const effort = isEffortValue(body.effort) ? body.effort : '';
   const id = 'a' + randomBytes(4).toString('hex');
 
   let cwd = resolveDir(body.cwd);
@@ -119,7 +119,20 @@ async function createAgent(body) {
   return store.add({ ...base, windowId, paneId });
 }
 
-async function restartAgent(a) {
+// 起動し直している最中のエージェントです。tmux の操作を待つ間に、キューの自動送信が古いプロセスや起動途中のプロセスへ送らないようにします
+const restarting = new Set();
+
+async function restartAgent(a, { activity = '再起動しています…' } = {}) {
+  restarting.add(a.id);
+  clearTimeout(dispatchTimers.get(a.id));
+  try {
+    await respawnAgent(a, activity);
+  } finally {
+    restarting.delete(a.id);
+  }
+}
+
+async function respawnAgent(a, activity) {
   // 会話が始まっていれば resume、まだなら新しいセッションで起動します
   // processStartedAt は、前のプロセスで止まったサブエージェントを「中断」と判定するために更新します（SessionStart が届けば上書きされます）
   const resume = !!(a.transcriptPath && fs.existsSync(a.transcriptPath));
@@ -128,7 +141,7 @@ async function restartAgent(a) {
   const panes = await tmux.listPanes();
   if (a.paneId && panes.has(a.paneId)) {
     await tmux.respawnPane({ paneId: a.paneId, cwd: a.cwd, env: agentEnv(a), command });
-    store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity: '再起動しています…', alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
+    store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
   } else {
     const { windowId, paneId } = await tmux.createWindow({
       name: a.name.replace(/[^\w.-]+/g, '_'),
@@ -136,8 +149,30 @@ async function restartAgent(a) {
       env: agentEnv(a),
       command,
     });
-    store.patch(a.id, { windowId, paneId, sessionId: a.sessionId, state: 'starting', activity: '再起動しています…', alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
+    store.patch(a.id, { windowId, paneId, sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
   }
+}
+
+/**
+ * 作成済みのエージェントのエフォートを変更します。変更できるかどうかは public/effort.js の effortChangeBlockReason が決めます。
+ * 動いているエージェントは、保存値を更新してから --resume で起動し直し、新しい --effort を付けて反映します（会話の記録がまだなければ新しいセッションです）。
+ * ハブから /effort を送らないのは、/effort が利用者の設定（~/.claude/settings.json のモデルごとの既定）にも保存するためです。
+ * プロセスが終了しているときは保存値だけを更新し、次の再起動で反映します。
+ * effortSetAt は、ハブから変えた時刻です。これより前に TUI で実行された /effort を、後から読み直して値を戻さないようにします（refreshEffort）
+ */
+async function changeEffort(a, body) {
+  const effort = body.effort ?? '';
+  if (!isEffortValue(effort)) throw httpError(400, `エフォートの値が不正です: ${effort}`);
+  if (effort === (a.effort || '')) return { restarted: false };
+  const reason =
+    effortChangeBlockReason(a) ||
+    (a.alive && (dispatching.has(a.id) || restarting.has(a.id) || handoffBusy.has(a.id)) ? 'キューの送信中か、起動し直している最中です。少し待ってから変更してください' : null);
+  if (reason) throw httpError(409, reason);
+  // 保存値を先に更新します。起動し直しに失敗しても、次の再起動で新しい値が使われるようにするためです
+  store.patch(a.id, { effort, effortSetAt: Date.now() });
+  if (!a.alive) return { restarted: false };
+  await restartAgent(a, { activity: `エフォートを「${effort || 'ユーザー設定に従う'}」にして起動し直しています…` });
+  return { restarted: true };
 }
 
 async function deleteAgent(a) {
@@ -194,6 +229,18 @@ function refreshContext(id) {
   if (tokens !== a.contextTokens) store.patch(id, { contextTokens: tokens });
 }
 store.on('change', (id) => refreshContext(id));
+
+// ---------- エフォートの追従 ----------
+
+// TUI で直接実行された /effort の結果を transcript から読み、保存値に反映します
+// （読み取りは lib/transcript.js の readEffortChange、反映するかどうかは public/effort.js の effortToFollow が決めます）
+function refreshEffort(id) {
+  const a = store.get(id);
+  if (!a) return;
+  const effort = effortToFollow(a, readEffortChange(a.transcriptPath));
+  if (effort !== undefined) store.patch(id, { effort });
+}
+store.on('change', (id) => refreshEffort(id));
 
 // ---------- 対話要求 ----------
 
@@ -300,7 +347,10 @@ const dispatchTimers = new Map();
 
 function readyForNext(a) {
   // 引き継ぎの間は、一時停止の状態にかかわらず送りません（メモの応答や新しいセッションの最初の指示の前に割り込ませないため）
-  return a && a.alive && a.queue.length && !a.pending.length && (a.state === 'done' || a.state === 'idle') && !dispatching.has(a.id) && !isHandoffActive(a.handoff);
+  // 起動し直している間も送りません（終了させる前のプロセスや、起動途中のプロセスに送らないため）
+  return (
+    a && a.alive && a.queue.length && !a.pending.length && (a.state === 'done' || a.state === 'idle') && !dispatching.has(a.id) && !restarting.has(a.id) && !isHandoffActive(a.handoff)
+  );
 }
 
 // 状態が変わるたびに、少し待ってから次のタスクを送れるか確認します
@@ -609,6 +659,8 @@ async function api(req, res, url) {
     case 'restart':
       await restartAgent(a);
       return send(res, 200, { ok: true });
+    case 'effort':
+      return send(res, 200, { ok: true, ...(await changeEffort(a, body)) });
     case 'focus':
       await tmux.focusWindow(a.windowId);
       return send(res, 200, { ok: true });
@@ -646,10 +698,12 @@ watchDir(EVENTS_DIR, (_type, fname) => {
 setInterval(() => store.list().forEach((a) => store.ingest(a.id)), 1500);
 setInterval(() => reconcile().catch(() => {}), 2000);
 // 引き継ぎの待ち時間の上限と、Stop の後に transcript へメモが書き込まれるのを待つ間は、イベントが届かなくても判定し直します。
-// コンテキスト量も、イベントの後に transcript へ書き込まれた応答を取りこぼさないよう定期的に確かめます（追記分だけを読みます）
+// コンテキスト量も、イベントの後に transcript へ書き込まれた応答を取りこぼさないよう定期的に確かめます（追記分だけを読みます）。
+// TUI で実行した /effort はフックのイベントを伴わないため、同じく定期的に確かめます
 setInterval(() => {
   for (const a of store.list()) {
     refreshContext(a.id);
+    refreshEffort(a.id);
     if (isHandoffActive(a.handoff)) advanceHandoff(a.id).catch((e) => console.error(e));
   }
 }, 1000);

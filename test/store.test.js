@@ -224,6 +224,18 @@ test('圧縮とセッション終了の遷移', () => {
   assert.equal(a.activity, 'セッション終了 (logout)');
 });
 
+test('起動し直している間に届いた前のプロセスの SessionEnd では「終了」にしない', () => {
+  const { store, id, emit } = setup();
+  emit({ event: 'SessionStart', source: 'startup', session_id: 's1' });
+  // server.js の restartAgent と同じく、起動し直すときは「起動中」にします
+  store.patch(id, { state: 'starting', activity: '再起動しています…' });
+  let a = emit({ event: 'SessionEnd', reason: 'other' });
+  assert.equal(a.state, 'starting');
+  assert.equal(a.activity, '再起動しています…');
+  a = emit({ event: 'SessionStart', source: 'resume', session_id: 's1' });
+  assert.equal(a.state, 'idle');
+});
+
 test('ingest は途中までの行を持ち越し、壊れた行を読み飛ばす', () => {
   const { store, id } = setup();
   const file = store.eventsFile(id);
