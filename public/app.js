@@ -11,6 +11,7 @@ import { effortChangeBlockReason } from './effort.js';
 import { exitBlockReason } from './exit.js';
 import { usageReceivedLabel, usageRows } from './usage.js';
 import { isTurnBusy, itemTime, turnDurations, turnLabel, turnTitle } from './timeline.js';
+import { mountChuru } from './churu.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -228,7 +229,7 @@ function renderList() {
         ? `<button type="button" class="chip sub-chip${subs.active ? ' active' : ''}" data-toggle-sub="${a.id}" aria-expanded="${!collapsed}" title="サブエージェント（作業中 / 全体）。押すとツリーを${collapsed ? '開きます' : '折りたたみます'}">${collapsed ? '▸' : '▾'} サブ ${subs.active}/${subs.total}</button>`
         : '';
       return `<li class="agent st-${a.state} state-${a.state}${a.id === selectedId && !selectedSub ? ' selected' : ''}" data-id="${a.id}">
-        ${catCanvas({ seed: a.id, coat: a.coat, state: a.state, activity: a.activity, since: a.stateSince, cls: 'cat-icon' })}
+        ${catCanvas({ seed: a.id, coat: a.coat, state: a.state, activity: a.activity, since: a.stateSince, cls: 'cat-icon', treats: true })}
         <div class="agent-main">
         <div class="row">
           <span class="idx">${i < 9 ? i + 1 : ''}</span>
@@ -977,6 +978,7 @@ setInterval(renderUsage, 30000);
 $('#d-cat').innerHTML = catCanvas({ seed: '', state: 'idle', w: 64, h: 16, scale: 2 });
 $('#empty-cat').innerHTML = catCanvas({ seed: 'hub', coat: 'orange', state: 'idle', since: 1, scale: 4 });
 mountCats($('#empty'));
+mountChuru($('#churu'), $('#agent-list'));
 
 renderDetail();
 renderUsage();

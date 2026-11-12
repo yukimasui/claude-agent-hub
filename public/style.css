@@ -103,7 +103,33 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 .st-ended { --st: var(--ended); }
 .elapsed { font-family: var(--mono); font-size: 11px; color: var(--muted); }
 
-.side-foot { padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); display: grid; gap: 6px; }
+.side-foot { position: relative; padding: 10px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); display: grid; gap: 6px; }
+
+/* ---------- ちゅーるモード ---------- */
+/* 隠し要素なので、ふだんは下の隅に小さく薄く置き、マウスを乗せたときだけ少し見えやすくします */
+.churu {
+  position: absolute;
+  right: 6px;
+  bottom: 6px;
+  width: 12px;
+  height: 32px;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  opacity: 0.22;
+  cursor: grab;
+  /* タッチでのドラッグがスクロールにならないよう、またドラッグ中に文字が選択されないようにします */
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: opacity 0.2s;
+}
+.churu:hover { opacity: 0.6; }
+/* ドラッグ中はポインタに付いて動くよう、画面に対する位置（left / top は churu.js が設定します）に切り替えます */
+.churu.dragging { position: fixed; right: auto; bottom: auto; z-index: 50; opacity: 1; cursor: grabbing; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5)); }
+/* 猫から離れた場所で離したときに元の場所へ戻る動きです（時間は churu.js の RETURN_MS とそろえます） */
+.churu.returning { transition: left 0.25s ease-out, top 0.25s ease-out, opacity 0.25s; opacity: 0.22; }
+/* 食べられた後は隠し、時間が来たら（churu.js が eaten を外すと）ふわっと戻します */
+.churu.eaten { visibility: hidden; opacity: 0; transition: none; }
 
 /* ---------- メイン ---------- */
 .main { display: flex; min-width: 0; min-height: 0; }

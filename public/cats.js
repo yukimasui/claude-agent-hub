@@ -2,7 +2,11 @@
 // スプライトは文字列で定義して、毛色ごとにオフスクリーン canvas へ焼き込んでから拡大描画します。
 // アニメーションは全体共通の tick から計算するので、DOM を作り直しても動きが途切れません。
 //
+// 一覧の猫は、ちゅーるモード（churu.js）のしぐさがあれば、状態から決まる気分より優先して描きます。
+//
 // 文字の意味: . 透明 / B 地の色 / S 縞・ポイント / W 白 / K 目 / L 閉じた目などの線 / P 鼻・口 / R 強調(赤) / A アクセント / Z 吹き出し文字
+
+import { gestureOf } from './churu.js';
 
 // ---------- 毛色 ----------
 
@@ -62,6 +66,9 @@ const EYES_CLOSED = [[4, 3, 'B'], [8, 3, 'B'], [4, 4, 'L'], [8, 4, 'L']];
 const EYES_HAPPY = [...[[4, 3, 'B'], [8, 3, 'B']], [3, 5, 'P'], [9, 5, 'P']];
 const MOUTH_OPEN = [[6, 6, 'P'], [6, 7, 'P']];
 const PAW_UP = [[7, 12, 'B'], [8, 12, 'B'], [7, 13, 'B'], [8, 13, '.'], [10, 7, 'W'], [11, 7, 'W'], [10, 8, 'W'], [11, 8, 'W'], [11, 6, 'W']];
+// ちゅーるをなめる舌（出したときと引っ込めたとき）
+const TONGUE_OUT = [[6, 6, 'P'], [6, 7, 'P'], [7, 7, 'P']];
+const TONGUE_IN = [[6, 6, 'P']];
 const PAW_FACE = [[7, 12, 'B'], [8, 12, 'B'], [7, 13, 'B'], [8, 13, '.'], [7, 6, 'W'], [8, 6, 'W'], [7, 7, 'W'], [8, 7, 'W']];
 
 function sit(tail = 0, ...mods) {
@@ -112,6 +119,8 @@ const GLYPHS = {
   z: ['ZZZZ', '...Z', '..Z.', '.Z..', 'ZZZZ'],
   zs: ['ZZZ', '..Z', '.Z.', 'Z..', 'ZZZ'],
   dot: ['A'],
+  heart: ['RR.RR', 'RRRRR', 'RRRRR', '.RRR.', '..R..'],
+  heartSmall: ['R.R', 'RRR', '.R.'],
 };
 
 // ---------- 描画キャッシュ ----------
@@ -213,6 +222,20 @@ function scene(mood, t, w, h) {
       ops.push({ rows: GLYPHS.note, x: sitX + 15, y: Math.max(0, sitY + 2 - float) });
       break;
     }
+    case 'lick': {
+      // 目を細めて舌を出し入れします。静止画（t = 0）では舌を出した姿にして、なめていると分かるようにしています
+      const out = Math.floor(t / 2) % 2 === 0;
+      ops.push({ rows: sit(tail, EYES_HAPPY, out ? TONGUE_OUT : TONGUE_IN), x: sitX, y: sitY });
+      break;
+    }
+    case 'delight': {
+      // しっぽを速く振って小さく跳ね、右に大きいハート、左に小さいハートを浮かべます
+      const hop = Math.floor(t / 2) % 3 === 2 ? -1 : 0;
+      ops.push({ rows: sit([0, 1, 2, 1][t % 4], EYES_HAPPY), x: sitX, y: sitY + hop });
+      ops.push({ rows: GLYPHS.heart, x: sitX + 15, y: Math.max(0, sitY + 4 - (Math.floor(t / 2) % 6)) });
+      if (Math.floor(t / 3) % 2 === 0) ops.push({ rows: GLYPHS.heartSmall, x: 0, y: Math.max(0, sitY + 3 - (Math.floor(t / 3) % 4)) });
+      break;
+    }
     case 'yawn': {
       const phase = Math.floor(t / 6) % 3;
       ops.push({ rows: sit(1, phase === 1 ? [EYES_CLOSED, MOUTH_OPEN] : blink ? EYES_CLOSED : []), x: sitX, y: sitY });
@@ -277,7 +300,9 @@ function render(canvas) {
   const w = Number(canvas.dataset.w) || 24;
   const h = Number(canvas.dataset.h) || 16;
   const scale = canvas.width / w;
-  const mood = moodOf({ state: canvas.dataset.state, activity: canvas.dataset.activity, since: canvas.dataset.since });
+  const mood =
+    (canvas.dataset.treats && gestureOf(canvas.dataset.seed)) ||
+    moodOf({ state: canvas.dataset.state, activity: canvas.dataset.activity, since: canvas.dataset.since });
   const coat = coatOf(canvas.dataset.seed, canvas.dataset.coat);
   const t = animate ? tick : 0;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -307,12 +332,17 @@ const MOOD_LABEL = {
   groom: '毛づくろい中',
   sleep: 'お昼寝中',
   'dead-sleep': 'おやすみ',
+  lick: 'ちゅーるをなめています',
+  delight: 'ごきげん',
 };
 
-/** 猫を描く canvas の HTML を返します */
-export function catCanvas({ seed, coat, state, activity, since, w = 24, h = 16, scale = 2, cls = '' }) {
+/**
+ * 猫を描く canvas の HTML を返します。
+ * treats を付けた猫だけがちゅーるモードの相手になります（一覧の猫だけにし、同じエージェントのステータス行の猫は対象にしないため）
+ */
+export function catCanvas({ seed, coat, state, activity, since, w = 24, h = 16, scale = 2, cls = '', treats = false }) {
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-  return `<canvas class="cat ${cls}" width="${w * scale}" height="${h * scale}" style="width:${w * scale}px;height:${h * scale}px" data-w="${w}" data-h="${h}" data-seed="${esc(seed)}" data-coat="${esc(coat || '')}" data-state="${esc(state)}" data-activity="${esc(activity)}" data-since="${esc(since || '')}"></canvas>`;
+  return `<canvas class="cat ${cls}" width="${w * scale}" height="${h * scale}" style="width:${w * scale}px;height:${h * scale}px" data-w="${w}" data-h="${h}" data-seed="${esc(seed)}" data-coat="${esc(coat || '')}" data-state="${esc(state)}" data-activity="${esc(activity)}" data-since="${esc(since || '')}"${treats ? ' data-treats="1"' : ''}></canvas>`;
 }
 
 /** 新しく DOM に入った猫 canvas を登録して即座に描きます */
