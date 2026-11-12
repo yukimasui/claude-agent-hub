@@ -4,8 +4,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
-  STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, CLEAR_UNCONFIRMED_PAUSE_NOTE,
-  applyQueueOp, clearFinished, clearPauseNote, hasOpenProposals, proposalPauseNote, sendBlockReason,
+  STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, CLEAR_UNCONFIRMED_PAUSE_NOTE, LOCAL_COMMAND_PAUSE_NOTE, LOCAL_COMMAND_WAIT_MS,
+  applyQueueOp, clearFinished, clearPauseNote, hasOpenProposals, localCommandPatch, mayBeLocalCommand, proposalPauseNote, sendBlockReason,
 } from '../lib/queue.js';
 import { proposalKey, findOpenProposals } from '../public/triage.js';
 import { queueSignature, replyMark, sendNextTitle, staleHead } from '../public/queue.js';
@@ -541,4 +541,77 @@ test('/clear の完了を確認できずに一時停止したキューは、「�
   // 画面には古い判断の扱いを選ぶボタンではなく、通常の「再開」を出します
   assert.equal(staleHead(paused, undefined), null);
   assert.equal(staleHead(paused, null), null);
+});
+
+// ---------- ローカルコマンドの送信後の状態 ----------
+
+test('スラッシュで始まる項目だけを、ローカルコマンドかもしれないものとして送信後の様子を確かめる', () => {
+  for (const t of ['/cost', '/context', '/model haiku', '/my-skill 引数']) assert.equal(mayBeLocalCommand(t), true, t);
+  // 通常のプロンプトは対象にせず、送信後の動作を変えません
+  for (const t of ['コストを教えて', 'see /cost', '/', '// コメント', '/ 空白', '']) assert.equal(mayBeLocalCommand(t), false, t);
+});
+
+/** キューからスラッシュコマンドを送った直後の様子です（server.js の dispatchNext が「実行中」にしたときの値） */
+const SENT_AT = 1000;
+const sent = { at: SENT_AT, stateSince: SENT_AT + 20, turnStartedAt: SENT_AT + 20, sessionId: 's1', command: '/context' };
+/** 送った直後から hook のイベントが届いていないエージェントです */
+const afterSend = (fields = {}) =>
+  agent({ state: 'running', stateSince: sent.stateSince, turnStartedAt: sent.turnStartedAt, sessionId: 's1', activity: 'キューから送信: /context', ...fields });
+
+test('ローカルコマンドの出力が記録されたら、キューを止めずに「待機中」に戻す', () => {
+  // /context などは hook のイベントを出さず、終わると transcript に <local-command-stdout> を記録します
+  const now = SENT_AT + 9000;
+  const fields = localCommandPatch(afterSend(), sent, SENT_AT + 8500, now);
+  assert.equal(fields.state, 'idle');
+  assert.equal(fields.stateSince, now);
+  assert.match(fields.activity, /\/context/);
+  assert.equal(fields.queuePaused, undefined);
+  assert.equal(fields.queueNote, undefined);
+});
+
+test('ローカルコマンドの出力も hook のイベントもまだなければ、待ち続ける', () => {
+  assert.equal(localCommandPatch(afterSend(), sent, null, SENT_AT + 300), undefined);
+  // 送る前に記録された別のコマンドの出力は、今回の結果とみなしません
+  assert.equal(localCommandPatch(afterSend(), sent, SENT_AT - 1, SENT_AT + 300), undefined);
+  // サブエージェントのツール呼び出しは表示の文言を変えるだけで、ターンが始まったことにはならないので待ち続けます
+  assert.equal(localCommandPatch(afterSend({ activity: 'Bash: ls' }), sent, null, SENT_AT + 300), undefined);
+});
+
+test('出力も hook のイベントもないまま待ちきったら、ダイアログが開いているものとしてキューを一時停止する', () => {
+  // /cost などダイアログを開くコマンドは、閉じても何も記録しないため、利用者が閉じてから再開するのを待ちます
+  const now = SENT_AT + LOCAL_COMMAND_WAIT_MS;
+  for (const queue of [[], [item('n1')]]) {
+    const fields = localCommandPatch(afterSend({ queue }), sent, null, now);
+    assert.equal(fields.state, 'idle');
+    assert.equal(fields.stateSince, now);
+    assert.equal(fields.queuePaused, true);
+    assert.equal(fields.queueNote, LOCAL_COMMAND_PAUSE_NOTE);
+  }
+  assert.equal(localCommandPatch(afterSend(), sent, null, now - 1), undefined);
+});
+
+test('プロンプトとして展開されたコマンドや、hook のイベントで状態が決まった場合は、何も変えずに見守りをやめる', () => {
+  const now = SENT_AT + LOCAL_COMMAND_WAIT_MS;
+  // スキルやカスタムコマンドは UserPromptSubmit が届き、ターンの開始時刻が変わります。以降は Stop などで状態が戻ります
+  assert.equal(localCommandPatch(afterSend({ turnStartedAt: SENT_AT + 50, activity: '思考中…' }), sent, null, now), null);
+  // ターンが始まっていれば、出力らしき記録があっても「待機中」には戻しません
+  assert.equal(localCommandPatch(afterSend({ turnStartedAt: SENT_AT + 50 }), sent, SENT_AT + 60, now), null);
+  // 応答完了（Stop）、圧縮（/compact の PreCompact）、回答待ち、ハブからの中断、起動し直しなど、状態が変わった場合
+  for (const state of ['done', 'compacting', 'waiting', 'idle', 'starting', 'ended']) {
+    assert.equal(localCommandPatch(afterSend({ state, stateSince: SENT_AT + 100 }), sent, null, now), null, state);
+  }
+  assert.equal(localCommandPatch(afterSend({ pending: [{ reqId: 'r1' }] }), sent, null, now), null);
+  // /clear で新しいセッションが始まった場合
+  assert.equal(localCommandPatch(afterSend({ sessionId: 's2' }), sent, null, now), null);
+  // エージェントが削除されたか終了した場合
+  assert.equal(localCommandPatch(undefined, sent, null, now), null);
+  assert.equal(localCommandPatch(afterSend({ alive: false }), sent, null, now), null);
+});
+
+test('ローカルコマンドのための一時停止は、仕分けボードからの判断では解除しない', () => {
+  // ダイアログが開いたままかもしれないため、利用者がターミナルで確かめて「再開」するまで止めておきます
+  const paused = agent({ queue: [item('n1')], queuePaused: true, queueNote: LOCAL_COMMAND_PAUSE_NOTE });
+  const added = applyQueueOp(paused, { op: 'add', text: 'A 案で', reply: true, proposal: 'p1' });
+  assert.equal(added.fields.queuePaused, undefined);
+  assert.deepEqual(applyQueueOp(paused, { op: 'resume' }).fields.queuePaused, false);
 });

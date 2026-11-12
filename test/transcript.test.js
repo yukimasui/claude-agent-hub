@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { detectImageType, readTranscript, readTranscriptImage } from '../lib/transcript.js';
+import { detectImageType, readLocalCommandOutputAt, readTranscript, readTranscriptImage } from '../lib/transcript.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-transcript-'));
 after(() => fs.rmSync(dir, { recursive: true, force: true }));
@@ -595,4 +595,32 @@ test('sidechain を指定すると、サブエージェントの transcript（is
   assert.deepEqual(readTranscript(file, 300, { sidechain: true }).map((i) => i.text), ['サブエージェントへの依頼', '報告']);
   // 読み方ごとに別のキャッシュを使うので、続けて通常の読み方をしても結果が混ざりません
   assert.deepEqual(readTranscript(file).map((i) => i.text), ['親の発言']);
+});
+
+test('ローカルコマンドの出力の記録から、最後に記録された時刻を追記分だけ読んで返す', () => {
+  const T1 = '2026-11-12T02:10:31.007Z';
+  const T2 = '2026-11-12T02:12:00.000Z';
+  const T3 = '2026-11-12T02:13:53.519Z';
+  // Claude Code 2.1.322 で確認した形です。/context などは system の local_command として、/effort などは user として記録されます
+  const sysCmd = (name, ts) => ({ type: 'system', subtype: 'local_command', timestamp: ts, content: `<command-name>${name}</command-name>\n<command-message>${name.slice(1)}</command-message>\n<command-args></command-args>` });
+  const sysOut = (text, ts) => ({ type: 'system', subtype: 'local_command', timestamp: ts, content: `<local-command-stdout>${text}</local-command-stdout>` });
+  const file = path.join(dir, 'local-command.jsonl');
+  assert.equal(readLocalCommandOutputAt(file), null); // まだファイルがありません
+  assert.equal(readLocalCommandOutputAt(null), null);
+  // スキルやカスタムコマンドは <command-name> の後に展開されたプロンプトが続くだけで、出力は記録されません
+  fs.writeFileSync(file, toJsonl([
+    { ...user('<command-message>hello</command-message>\n<command-name>/hello</command-name>'), timestamp: T1 },
+    { ...user([{ type: 'text', text: 'Reply with just HELLO.' }]), timestamp: T1 },
+    { ...assistant([{ type: 'text', text: '<local-command-stdout> という文字を含む応答' }]), timestamp: T1 },
+    { ...user('<local-command-stdout>サブエージェント内の記録</local-command-stdout>', { isSidechain: true }), timestamp: T1 },
+  ]));
+  assert.equal(readLocalCommandOutputAt(file), null);
+
+  fs.appendFileSync(file, toJsonl([sysCmd('/context', T1), sysOut('Context Usage', T1)]));
+  assert.equal(readLocalCommandOutputAt(file), Date.parse(T1));
+  fs.appendFileSync(file, toJsonl([
+    { ...user('<command-name>/effort</command-name>\n<command-args>high</command-args>'), timestamp: T2 },
+    { ...user('<local-command-stderr>Invalid argument</local-command-stderr>'), timestamp: T3 },
+  ]));
+  assert.equal(readLocalCommandOutputAt(file), Date.parse(T3));
 });

@@ -29,13 +29,23 @@ import {
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
 import { buildOutput } from './lib/interactions.js';
-import { HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, applyQueueOp, clearFinished, clearPauseNote, proposalPauseNote, sendBlockReason } from './lib/queue.js';
+import {
+  HANDOFF_PAUSE_NOTE,
+  INTERRUPT_PAUSE_NOTE,
+  applyQueueOp,
+  clearFinished,
+  clearPauseNote,
+  localCommandPatch,
+  mayBeLocalCommand,
+  proposalPauseNote,
+  sendBlockReason,
+} from './lib/queue.js';
 import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
 import { effortChangeBlockReason, effortToFollow, isEffortValue } from './public/effort.js';
 import * as tmux from './lib/tmux.js';
 import { resolvePanes } from './lib/panes.js';
-import { readContextTokens, readEffortChange, readTranscript, readTranscriptImage } from './lib/transcript.js';
+import { readContextTokens, readEffortChange, readLocalCommandOutputAt, readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, listen, listenErrorMessage, sendImage, serveStatic } from './lib/http.js';
 import { watchDir } from './lib/watch.js';
@@ -382,6 +392,7 @@ async function dispatchNext(id, { force = false } = {}) {
   dispatching.add(id);
   const item = a.queue[0];
   const before = a.sessionId;
+  let sent = null;
   try {
     if (item.clearFirst) {
       await tmux.sendText(a.paneId, '/clear');
@@ -398,6 +409,7 @@ async function dispatchNext(id, { force = false } = {}) {
       return;
     }
     if (!cur || !cur.alive || cur.pending.length) return;
+    const sentAt = Date.now();
     await tmux.sendText(cur.paneId, item.text);
     const now = Date.now();
     store.patch(id, {
@@ -407,8 +419,28 @@ async function dispatchNext(id, { force = false } = {}) {
       stateSince: now,
       turnStartedAt: now,
     });
+    if (mayBeLocalCommand(item.text)) sent = { at: sentAt, stateSince: now, turnStartedAt: now, sessionId: cur.sessionId, command: item.text.split(/\s/)[0] };
   } finally {
     dispatching.delete(id);
+  }
+  // 送信中の印を外してから見守ります。「待機中」に戻したときの状態の変化で、次の項目の自動送信を判定させるためです
+  // （見守っている間は「実行中」のままなので、次の項目が先に送られることはありません）
+  if (sent) await watchLocalCommand(id, sent);
+}
+
+// キューから送ったスラッシュコマンドが、TUI の中だけで処理されるローカルコマンドだったかを見守り、
+// そうであれば「実行中」から戻します。ローカルコマンドでは Stop などの hook のイベントが届かず、「実行中」のまま止まるためです。
+// 判定は lib/queue.js の localCommandPatch、終わったことの確認は transcript の出力の記録（lib/transcript.js の readLocalCommandOutputAt）で行います
+async function watchLocalCommand(id, sent) {
+  for (;;) {
+    await sleep(300);
+    // 監視の通知を待たずにイベントを読み込みます。プロンプトとして展開されたコマンドの UserPromptSubmit を、出力の記録より先に反映するためです
+    store.ingest(id);
+    const a = store.get(id);
+    const fields = localCommandPatch(a, sent, a ? readLocalCommandOutputAt(a.transcriptPath) : null, Date.now());
+    if (fields === undefined) continue;
+    if (fields) store.patch(id, fields);
+    return;
   }
 }
 
