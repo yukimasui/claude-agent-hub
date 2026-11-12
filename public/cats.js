@@ -69,17 +69,18 @@ function sit(tail = 0, ...mods) {
 }
 
 // 歩き（右向き）20x13。体の上半分は共通で、脚だけ差し替えます
+// 顔はお座り（SIT の 0〜5 行目）と同じ正面の顔にして、同じ猫に見えるようにしています
 const WALK_BODY = [
-  '............S.....S.',
-  '............BB...BB.',
-  '............BBSBSBB.',
-  '............BKBBBKB.',
-  '............BBWPWBB.',
-  '.S...........BWWWB..',
-  '.B..BBBBBBBBBBBBB...',
-  '..BBBSBBSBBSBBBBB...',
-  '...BBSBBSBBSBBBBB...',
-  '...BBBBBBBBBBBBBB...',
+  '...........S.......S',
+  '...........BB.....BB',
+  '...........BBBSBSBBB',
+  '...........BBKBBBKBB',
+  '...........BBKBBBKBB',
+  '.S.........BBBWPWBBB',
+  '.B..BBBBBBBBBBWWWBB.',
+  '..BBBSBBSBBSBBWWWB..',
+  '...BBSBBSBBSBBWWWB..',
+  '...BBBBBBBBBBBBBBB..',
   '....BBBBWWWWWBBB....',
 ];
 const WALK_LEGS = [
