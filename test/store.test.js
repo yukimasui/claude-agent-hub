@@ -74,6 +74,15 @@ test('sessionId が変わったら agents.json に保存する', () => {
   assert.equal(saved.sessionId, 'saved-session');
 });
 
+test('エフォートは agents.json に保存し、読み直しても復元する', () => {
+  const { id } = setup({ effort: 'xhigh' });
+  const saved = JSON.parse(fs.readFileSync(AGENTS_FILE, 'utf8')).find((x) => x.id === id);
+  assert.equal(saved.effort, 'xhigh');
+  const reloaded = new Store();
+  reloaded.init();
+  assert.equal(reloaded.get(id).effort, 'xhigh');
+});
+
 test('権限確認は要対応になり、ターミナルで先に解決されたら後続イベントで取り下げる', () => {
   const { emit, cancels } = setup();
   emit({ event: 'UserPromptSubmit', prompt: 'x' });

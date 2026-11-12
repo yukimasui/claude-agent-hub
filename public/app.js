@@ -281,7 +281,8 @@ function renderDetail() {
   }
   $('#d-name').textContent = a.name;
   const mode = a.currentMode ? ` · mode: ${a.currentMode}` : '';
-  $('#d-meta').textContent = `${a.model}${mode} · ${a.cwd} · ${a.sessionId?.slice(0, 8) ?? ''}`;
+  const effort = a.effort ? ` · effort: ${a.effort}` : '';
+  $('#d-meta').textContent = `${a.model}${effort}${mode} · ${a.cwd} · ${a.sessionId?.slice(0, 8) ?? ''}`;
   $('#d-meta').title = `${a.cwd}\nsession: ${a.sessionId}`;
   const since = a.state === 'running' ? a.turnStartedAt : a.stateSince;
   // ステータス行の要素は作り直さずに中身だけ更新します（猫の動きが途切れないように）

@@ -65,6 +65,7 @@ function writeHooksFile() {
 function buildCommand(a, { resume = false, prompt } = {}) {
   const args = [CLAUDE_BIN, '--model', a.model, '--settings', HOOKS_FILE];
   if (a.permissionMode) args.push('--permission-mode', a.permissionMode);
+  if (a.effort) args.push('--effort', a.effort);
   args.push('--append-system-prompt', HUB_SYSTEM_PROMPT);
   args.push(resume ? '--resume' : '--session-id', a.sessionId);
   if (prompt) args.push('--', prompt);
@@ -84,6 +85,8 @@ function resolveDir(p) {
 
 // 空文字はユーザー設定に従います（フラグを渡しません）
 const PERMISSION_MODES = new Set(['manual', 'acceptEdits', 'auto', 'plan']);
+// Claude Code の --effort が受け付ける値です（空文字はユーザー設定に従い、フラグを渡しません）
+const EFFORT_LEVELS = new Set(['low', 'medium', 'high', 'xhigh', 'max']);
 // ステータス表示の猫の毛色です（空文字はおまかせ）
 const COATS = new Set(['orange', 'gray', 'cream', 'siamese', 'black', 'calico']);
 
@@ -92,6 +95,7 @@ async function createAgent(body) {
   const model = String(body.model || DEFAULT_MODEL).trim();
   if (!/^[\w.:\[\]-]+$/.test(model)) throw httpError(400, 'モデル名が不正です');
   const permissionMode = PERMISSION_MODES.has(body.permissionMode) ? body.permissionMode : '';
+  const effort = EFFORT_LEVELS.has(body.effort) ? body.effort : '';
   const id = 'a' + randomBytes(4).toString('hex');
 
   let cwd = resolveDir(body.cwd);
@@ -104,7 +108,7 @@ async function createAgent(body) {
   }
 
   const coat = COATS.has(body.coat) ? body.coat : '';
-  const base = { id, name, model, cwd, permissionMode, coat, sessionId: randomUUID(), createdAt: Date.now(), processStartedAt: Date.now() };
+  const base = { id, name, model, cwd, permissionMode, effort, coat, sessionId: randomUUID(), createdAt: Date.now(), processStartedAt: Date.now() };
   const prompt = String(body.prompt || '').trim();
   const { windowId, paneId } = await tmux.createWindow({
     name: name.replace(/[^\w.-]+/g, '_'),
