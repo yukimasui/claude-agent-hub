@@ -5,7 +5,8 @@ import assert from 'node:assert/strict';
 import {
   ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
   STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, CLEAR_UNCONFIRMED_PAUSE_NOTE, LOCAL_COMMAND_PAUSE_NOTE, LOCAL_COMMAND_WAIT_MS,
-  applyQueueOp, clearFinished, clearPauseNote, hasOpenProposals, localCommandPatch, mayBeLocalCommand, proposalPauseNote, sendBlockReason,
+  applyQueueOp, clearFinished, clearPauseNote, dispatchSendStep, dispatchStartStep, hasOpenProposals, localCommandPatch, mayBeLocalCommand,
+  proposalPauseNote, readyForNext, sendBlockReason,
 } from '../lib/queue.js';
 import { proposalKey, findOpenProposals } from '../public/triage.js';
 import { queueSignature, replyMark, sendNextTitle, staleHead } from '../public/queue.js';
@@ -614,4 +615,71 @@ test('ローカルコマンドのための一時停止は、仕分けボード�
   const added = applyQueueOp(paused, { op: 'add', text: 'A 案で', reply: true, proposal: 'p1' });
   assert.equal(added.fields.queuePaused, undefined);
   assert.deepEqual(applyQueueOp(paused, { op: 'resume' }).fields.queuePaused, false);
+});
+
+// ---------- キューの自動送信の分岐（server.js の dispatchNext） ----------
+
+test('次の項目を送れるのは、生きていて回答待ちがなく、「応答完了」か「待機中」で、送信中・引き継ぎ中でないときだけ', () => {
+  const ready = agent({ queue: [item('x1')] });
+  assert.equal(readyForNext(ready), true);
+  assert.equal(readyForNext({ ...ready, state: 'done' }), true);
+  assert.equal(readyForNext(undefined), false);
+  assert.equal(readyForNext({ ...ready, queue: [] }), false);
+  assert.equal(readyForNext({ ...ready, alive: false }), false);
+  assert.equal(readyForNext({ ...ready, pending: [{ reqId: 'r1' }] }), false);
+  for (const state of ['running', 'waiting', 'starting', 'compacting', 'ended']) assert.equal(readyForNext({ ...ready, state }), false, state);
+  // 送信中か起動し直している最中（server.js が busy で渡します）は、終了させる前や起動途中のプロセスに送らないよう送りません
+  assert.equal(readyForNext(ready, { busy: true }), false);
+  // 引き継ぎの間は送りません。終わった引き継ぎの結果が残っているだけなら送ります
+  assert.equal(readyForNext({ ...ready, handoff: { stage: 'memo' } }), false);
+  assert.equal(readyForNext({ ...ready, handoff: { stage: 'done' } }), true);
+  // 一時停止は見ません（「先頭を今すぐ送信」では一時停止中でも送るため、呼び出し側で判断します）
+  assert.equal(readyForNext({ ...ready, queuePaused: true }), true);
+});
+
+test('自動送信の開始では、送れない状態や一時停止中なら送らず、送れるなら先頭の項目を返す', () => {
+  const noItems = () => assert.fail('提案の判定が要らないときは transcript を読みません');
+  const head = item('x1');
+  const ready = agent({ queue: [head, item('x2')] });
+  assert.deepEqual(dispatchStartStep(ready, { readItems: () => [] }), { type: 'send', item: head });
+  assert.deepEqual(dispatchStartStep({ ...ready, state: 'running' }, { readItems: noItems }), { type: 'skip' });
+  assert.deepEqual(dispatchStartStep(ready, { busy: true, readItems: noItems }), { type: 'skip' });
+  assert.deepEqual(dispatchStartStep(undefined, { readItems: noItems }), { type: 'skip' });
+  // 一時停止中は、「先頭を今すぐ送信」（force）のときだけ送ります
+  const paused = { ...ready, queuePaused: true, queueNote: MANUAL_PAUSE_NOTE };
+  assert.deepEqual(dispatchStartStep(paused, { readItems: noItems }), { type: 'skip' });
+  assert.deepEqual(dispatchStartStep(paused, { force: true, readItems: noItems }), { type: 'send', item: head });
+  // force でも、送れない状態なら送りません
+  assert.deepEqual(dispatchStartStep({ ...paused, alive: false }, { force: true, readItems: noItems }), { type: 'skip' });
+});
+
+test('自動送信の開始では、判断待ちの提案があれば一時停止し、「先頭を今すぐ送信」では提案の判定を省いて送る', () => {
+  const head = item('x1');
+  const a = agent({ queue: [head] });
+  assert.deepEqual(dispatchStartStep(a, { readItems: () => openItems }), { type: 'pause', note: PROPOSAL_PAUSE_NOTE });
+  assert.deepEqual(dispatchStartStep(a, { force: true, readItems: () => assert.fail('force では transcript を読みません') }), { type: 'send', item: head });
+  // 先頭が対象の提案への判断なら止めずに送り、別の提案への古い判断なら止めます（判定は proposalPauseNote と同じです）
+  const reply = item('r1', 'A 案で', { reply: true, proposal: openKey });
+  assert.deepEqual(dispatchStartStep(agent({ queue: [reply] }), { readItems: () => openItems }), { type: 'send', item: reply });
+  const answered = [...openItems, { role: 'user', text: 'A 案で進めて', ts: 't3' }, { role: 'assistant', text: '進めました。', ts: 't4' }];
+  assert.deepEqual(dispatchStartStep(agent({ queue: [reply] }), { readItems: () => answered }), { type: 'pause', note: STALE_REPLY_ANSWERED_NOTE });
+});
+
+test('本文を送る直前に、/clear の完了を確認できなければ一時停止し、終了・回答待ちなら送らずに終える', () => {
+  const before = 's1';
+  const plain = item('x1');
+  const withClear = item('c1', 'リセット後の指示', { clearFirst: true });
+  // 「/clear 付き」で新しいセッションが始まっていれば送ります。セッション ID が変わらなければ、項目を残して一時停止します
+  assert.deepEqual(dispatchSendStep(withClear, before, agent({ sessionId: 's2' })), { type: 'send' });
+  assert.deepEqual(dispatchSendStep(withClear, before, agent({ sessionId: 's1' })), { type: 'pause', note: CLEAR_UNCONFIRMED_PAUSE_NOTE });
+  // /clear の後に回答待ちのダイアログが出ても、/clear の完了を確認できていないので一時停止を優先します
+  assert.deepEqual(dispatchSendStep(withClear, before, agent({ sessionId: 's1', pending: [{ reqId: 'r1' }] })), { type: 'pause', note: CLEAR_UNCONFIRMED_PAUSE_NOTE });
+  // 新しいセッションで回答待ちになった場合や、削除・終了した場合は、一時停止せずに送らずに終えます
+  assert.deepEqual(dispatchSendStep(withClear, before, agent({ sessionId: 's2', pending: [{ reqId: 'r1' }] })), { type: 'skip' });
+  assert.deepEqual(dispatchSendStep(withClear, before, undefined), { type: 'skip' });
+  assert.deepEqual(dispatchSendStep(withClear, before, agent({ sessionId: 's1', alive: false })), { type: 'skip' });
+  // /clear なしの項目は、セッション ID を見ずに送ります（送る前に回答待ちになっていれば送りません）
+  assert.deepEqual(dispatchSendStep(plain, before, agent({ sessionId: 's1' })), { type: 'send' });
+  assert.deepEqual(dispatchSendStep(plain, before, agent({ sessionId: 's1', pending: [{ reqId: 'r1' }] })), { type: 'skip' });
+  assert.deepEqual(dispatchSendStep(plain, before, agent({ alive: false })), { type: 'skip' });
 });

@@ -2,7 +2,7 @@
 // tmux のサーバーが終了した後に作ったエージェントが、終了済みのエージェントと同じペイン ID・ウィンドウ ID を割り当てられる場合（Issue #97）を中心にしています。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PANE_FORMAT, agentIdFromEnviron, parsePanes, resolvePanes } from '../lib/panes.js';
+import { PANE_FORMAT, agentIdFromEnviron, parsePanes, resolvePanes, sendTargetBlockReason } from '../lib/panes.js';
 
 /** ペインの一覧（listPanes が返す形）を作ります。owner は確かめた持ち主で、null は分からないことを表します */
 const panesOf = (...list) => new Map(list.map(({ paneId, dead = false, windowId, owner = null }) => [paneId, { dead, windowId, owner }]));
@@ -123,4 +123,18 @@ test('ペインの一覧は、付けたエージェント ID を優先し、な�
   assert.deepEqual(reads, ['200', '300', '400']);
   // 一覧の書式は、parsePanes が読む列の順に合わせています
   assert.equal(PANE_FORMAT.split('\t').length, 5);
+});
+
+test('送信の直前に確かめたペインが別のエージェントのもの（またはハブのものではない）なら、送らない理由を返す', () => {
+  // 生存確認（2 秒ごと）の間にペインの ID が重なった場合に、別のエージェントへ届くのを防ぐためです
+  assert.equal(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: 'a1' }), null);
+  assert.match(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: 'a2' }), /別のエージェント/);
+  assert.match(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: '' }), /別のエージェント/);
+});
+
+test('送信の直前に持ち主を確かめられなければ、送信を止めない', () => {
+  // オプションを付ける前に作ったペインで /proc を読めない環境や、ペインを確かめられなかった場合（tmux の失敗など）です。
+  // 判断の材料がないのに止めると、正当な送信までできなくなるため、これまでどおり送ります（持ち主の判定は生存確認に任せます）
+  assert.equal(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: null }), null);
+  assert.equal(sendTargetBlockReason('a1', undefined), null);
 });

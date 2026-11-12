@@ -4,14 +4,15 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parsePanes } from '../lib/panes.js';
 
-let execWithInput;
+let execWithInput, readEnviron, sendText, sendKey;
 let home;
 before(async () => {
   // lib/config.js は import した時点で環境変数を読むため、本番や開発用のデータ置き場に触れないよう一時ディレクトリを指定します
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-tmux-test-'));
   process.env.AGENT_HUB_HOME = home;
-  ({ execWithInput } = await import('../lib/tmux.js'));
+  ({ execWithInput, readEnviron, sendText, sendKey } = await import('../lib/tmux.js'));
 });
 after(() => fs.rmSync(home, { recursive: true, force: true }));
 
@@ -59,4 +60,93 @@ test('入力がないときは、標準入力を読まずに終了するコマ�
   assert.equal(writes, 0);
   // 数え方が正しいことを確かめるため、入力を渡した場合は書き込みが数えられることも確認します
   assert.ok((await countStdinWrites(() => execWithInput(process.execPath, ['-e', 'process.exit(0)'], 'abc'))) > 0);
+});
+
+test('プロセスの環境変数が空なら、読めなかったもの（null）として扱い、持ち主をハブのものではないと判定しない', () => {
+  // 終了処理中のプロセスなどでは environ の内容が空になります。空のまま返すと、AGENT_HUB_AGENT がないことから
+  // ハブのものではないペインと判定され、正しい持ち主のエージェントが「終了」になってペイン ID を消されてしまいます
+  const proc = fs.mkdtempSync(path.join(home, 'proc-'));
+  const write = (pid, content) => {
+    fs.mkdirSync(path.join(proc, pid));
+    fs.writeFileSync(path.join(proc, pid, 'environ'), content);
+  };
+  write('100', '');
+  write('200', 'PATH=/usr/bin\0AGENT_HUB_AGENT=a1\0');
+  write('300', 'PATH=/usr/bin\0');
+  assert.equal(readEnviron('100', proc), null);
+  assert.equal(readEnviron('200', proc).toString(), 'PATH=/usr/bin\0AGENT_HUB_AGENT=a1\0');
+  assert.equal(readEnviron('999', proc), null);
+  // 持ち主の判定（lib/panes.js の parsePanes）では、空の environ のペインは持ち主が分からない（null）ものになります
+  const panes = parsePanes(['%1\t0\t@1\t100\t', '%2\t0\t@2\t200\t', '%3\t0\t@3\t300\t'].join('\n'), (pid) => readEnviron(pid, proc));
+  assert.equal(panes.get('%1').owner, null);
+  assert.equal(panes.get('%2').owner, 'a1');
+  assert.equal(panes.get('%3').owner, '');
+});
+
+/**
+ * PATH の先頭に偽の tmux を置いて fn を実行し、呼ばれた tmux のサブコマンドを順に返します。
+ * pane は display-message（送信直前のペインの確認）に返す 1 行（PANE_FORMAT の形）で、null なら display-message を失敗させます。
+ * 本物の tmux を使わないのは、利用者の tmux のセッションに触れずに、送信の手順だけを確かめるためです。
+ */
+async function withFakeTmux(pane, fn) {
+  const dir = fs.mkdtempSync(path.join(home, 'fake-tmux-'));
+  const log = path.join(dir, 'calls.log');
+  fs.writeFileSync(
+    path.join(dir, 'tmux'),
+    [
+      '#!/bin/sh',
+      'printf "%s\\n" "$1" >> "$FAKE_TMUX_LOG"',
+      'case "$1" in',
+      '  fake-check) echo fake-tmux; exit 0 ;;',
+      '  display-message) if [ -n "$FAKE_TMUX_FAIL" ]; then echo "can\'t find pane: $4" >&2; exit 1; fi; printf "%s\\n" "$FAKE_TMUX_PANE" ;;',
+      '  load-buffer) cat > /dev/null ;;',
+      'esac',
+      'exit 0',
+      '',
+    ].join('\n'),
+    { mode: 0o755 },
+  );
+  const saved = { PATH: process.env.PATH, FAKE_TMUX_LOG: process.env.FAKE_TMUX_LOG, FAKE_TMUX_PANE: process.env.FAKE_TMUX_PANE, FAKE_TMUX_FAIL: process.env.FAKE_TMUX_FAIL };
+  Object.assign(process.env, { PATH: `${dir}:${process.env.PATH}`, FAKE_TMUX_LOG: log, FAKE_TMUX_PANE: pane ?? '', FAKE_TMUX_FAIL: pane == null ? '1' : '' });
+  try {
+    // 万一偽の tmux が使われずに本物へ送ってしまわないよう、先に偽のものが呼ばれることを確かめます
+    assert.equal((await execWithInput('tmux', ['fake-check'])).trim(), 'fake-tmux');
+    await fn();
+  } finally {
+    for (const [k, v] of Object.entries(saved)) {
+      if (v === undefined) delete process.env[k];
+      else process.env[k] = v;
+    }
+  }
+  return fs.readFileSync(log, 'utf8').split('\n').filter((c) => c && c !== 'fake-check');
+}
+
+const paneLine = (owner) => ['%2', '0', '@2', '', owner].join('\t');
+const isForeign = (e) => e.status === 409 && e.code === 'foreign-pane' && /別のエージェント/.test(e.message);
+
+test('送信の直前にペインのエージェント ID を確かめ、別のエージェントのペインには文字もキーも送らない', async () => {
+  const calls = await withFakeTmux(paneLine('a2'), async () => {
+    await assert.rejects(sendText('%2', 'こんにちは', 'a1'), isForeign);
+    await assert.rejects(sendKey('%2', 'Enter', 'a1'), isForeign);
+  });
+  // 確かめるだけで、貼り付け（load-buffer / paste-buffer）やキーの送信（send-keys）は行いません
+  assert.deepEqual(calls, ['display-message', 'display-message']);
+});
+
+test('送り先のエージェントのペインには、確かめたうえでこれまでどおり送る', async () => {
+  const calls = await withFakeTmux(paneLine('a1'), async () => {
+    await sendText('%2', 'こんにちは', 'a1');
+    await sendKey('%2', 'Escape', 'a1');
+  });
+  assert.deepEqual(calls, ['display-message', 'load-buffer', 'paste-buffer', 'send-keys', 'display-message', 'send-keys']);
+});
+
+test('ペインの持ち主を確かめられないときは、送信を止めない', async () => {
+  // オプションのない古いペインで、プロセスが終了して環境変数を読めない場合です（/proc のない環境も、持ち主が分からない点で同じです）
+  const deadLegacy = ['%2', '1', '@2', '123', ''].join('\t');
+  const legacy = await withFakeTmux(deadLegacy, () => sendText('%2', 'こんにちは', 'a1'));
+  assert.deepEqual(legacy, ['display-message', 'load-buffer', 'paste-buffer', 'send-keys']);
+  // ペインの確認そのものに失敗した場合も、確認の前と同じく送信を試みます（ペインがなければ送信の側で失敗します）
+  const failed = await withFakeTmux(null, () => sendKey('%2', 'Enter', 'a1'));
+  assert.deepEqual(failed, ['display-message', 'send-keys']);
 });

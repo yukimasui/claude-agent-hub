@@ -34,15 +34,17 @@ import {
   INTERRUPT_PAUSE_NOTE,
   applyQueueOp,
   clearFinished,
-  clearPauseNote,
+  dispatchSendStep,
+  dispatchStartStep,
   localCommandPatch,
   mayBeLocalCommand,
-  proposalPauseNote,
+  readyForNext,
   sendBlockReason,
 } from './lib/queue.js';
 import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
-import { effortChangeBlockReason, effortToFollow, isEffortValue } from './public/effort.js';
+import { effortChangeBlockReason, effortToFollow } from './public/effort.js';
+import { buildCommand as buildLaunchCommand, effortOption, requestedEffort, shq } from './lib/launch.js';
 import * as tmux from './lib/tmux.js';
 import { resolvePanes } from './lib/panes.js';
 import { readContextTokens, readEffortChange, readLocalCommandOutputAt, readTranscript, readTranscriptImage } from './lib/transcript.js';
@@ -54,7 +56,6 @@ const store = new Store();
 
 // ---------- 起動準備 ----------
 
-const shq = (s) => `'${String(s).replace(/'/g, `'\\''`)}'`;
 
 /** --settings で渡す hook 設定を生成します。グローバル設定は汚しません */
 function writeHooksFile() {
@@ -74,14 +75,9 @@ function writeHooksFile() {
   fs.writeFileSync(HOOKS_FILE, JSON.stringify({ hooks }, null, 2));
 }
 
+// 組み立ては lib/launch.js が行い、ここでは設定値を渡します
 function buildCommand(a, { resume = false, prompt } = {}) {
-  const args = [CLAUDE_BIN, '--model', a.model, '--settings', HOOKS_FILE];
-  if (a.permissionMode) args.push('--permission-mode', a.permissionMode);
-  if (a.effort) args.push('--effort', a.effort);
-  args.push('--append-system-prompt', HUB_SYSTEM_PROMPT);
-  args.push(resume ? '--resume' : '--session-id', a.sessionId);
-  if (prompt) args.push('--', prompt);
-  return args.map(shq).join(' ');
+  return buildLaunchCommand(a, { bin: CLAUDE_BIN, settingsFile: HOOKS_FILE, systemPrompt: HUB_SYSTEM_PROMPT, resume, prompt });
 }
 
 function agentEnv(a) {
@@ -105,8 +101,8 @@ async function createAgent(body) {
   const model = String(body.model || DEFAULT_MODEL).trim();
   if (!/^[\w.:\[\]-]+$/.test(model)) throw httpError(400, 'モデル名が不正です');
   const permissionMode = PERMISSION_MODES.has(body.permissionMode) ? body.permissionMode : '';
-  // 空文字はユーザー設定に従い、--effort を付けません
-  const effort = isEffortValue(body.effort) ? body.effort : '';
+  // 空文字はユーザー設定に従い、--effort を付けません（lib/launch.js の effortOption）
+  const effort = effortOption(body.effort);
   const id = 'a' + randomBytes(4).toString('hex');
 
   let cwd = resolveDir(body.cwd);
@@ -175,8 +171,7 @@ async function respawnAgent(a, activity) {
  * effortSetAt は、ハブから変えた時刻です。これより前に TUI で実行された /effort を、後から読み直して値を戻さないようにします（refreshEffort）
  */
 async function changeEffort(a, body) {
-  const effort = body.effort ?? '';
-  if (!isEffortValue(effort)) throw httpError(400, `エフォートの値が不正です: ${effort}`);
+  const effort = requestedEffort(body);
   if (effort === (a.effort || '')) return { restarted: false };
   const reason =
     effortChangeBlockReason(a) ||
@@ -364,53 +359,43 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dispatching = new Set();
 const dispatchTimers = new Map();
 
-function readyForNext(a) {
-  // 引き継ぎの間は、一時停止の状態にかかわらず送りません（メモの応答や新しいセッションの最初の指示の前に割り込ませないため）
-  // 起動し直している間も送りません（終了させる前のプロセスや、起動途中のプロセスに送らないため）
-  return (
-    a && a.alive && a.queue.length && !a.pending.length && (a.state === 'done' || a.state === 'idle') && !dispatching.has(a.id) && !restarting.has(a.id) && !isHandoffActive(a.handoff)
-  );
-}
+// 送れる状態かどうかは lib/queue.js の readyForNext が決め、ここでは送信中・起動し直し中かどうかだけを渡します
+const isBusy = (id) => dispatching.has(id) || restarting.has(id);
 
 // 状態が変わるたびに、少し待ってから次のタスクを送れるか確認します
 store.on('change', (id) => {
   const a = store.get(id);
-  if (!a || a.queuePaused || !readyForNext(a)) return;
+  if (!a || a.queuePaused || !readyForNext(a, { busy: isBusy(id) })) return;
   clearTimeout(dispatchTimers.get(id));
   dispatchTimers.set(id, setTimeout(() => dispatchNext(id).catch((e) => console.error(e)), 1500));
 });
 
 async function dispatchNext(id, { force = false } = {}) {
   const a = store.get(id);
-  if (!readyForNext(a) || (a.queuePaused && !force)) return;
-  // 画面（/api/agents/:id/transcript の既定）と同じ件数を読み、仕分けボードの自動表示と同じ範囲で判定します
-  const note = force ? null : proposalPauseNote(a, readTranscript(a.transcriptPath));
-  if (note) {
-    store.patch(id, { queuePaused: true, queueNote: note });
-    return;
-  }
+  // 送るかどうか・一時停止するかどうかは lib/queue.js の dispatchStartStep と dispatchSendStep が決めます
+  // 会話は画面（/api/agents/:id/transcript の既定）と同じ件数を読み、仕分けボードの自動表示と同じ範囲で判定します
+  const start = dispatchStartStep(a, { force, busy: isBusy(id), readItems: () => readTranscript(a.transcriptPath) });
+  if (start.type === 'pause') store.patch(id, { queuePaused: true, queueNote: start.note });
+  if (start.type !== 'send') return;
   dispatching.add(id);
-  const item = a.queue[0];
+  const { item } = start;
   const before = a.sessionId;
   let sent = null;
   try {
     if (item.clearFirst) {
-      await tmux.sendText(a.paneId, '/clear');
+      await tmux.sendText(a.paneId, '/clear', a.id);
       // /clear で新しいセッションの SessionStart が届くのを待ちます（判定は lib/queue.js の clearFinished）
       for (let i = 0; i < 40 && !clearFinished(before, store.get(id)); i++) await sleep(150);
       await sleep(400);
     }
     const cur = store.get(id);
     // 新しいセッションを確認できなかった場合は、リセットされていない会話に本文を送らないよう、項目を残して一時停止します
-    // （判定と再開時の動きは lib/queue.js の clearPauseNote と CLEAR_UNCONFIRMED_PAUSE_NOTE）
-    const clearNote = item.clearFirst ? clearPauseNote(before, cur) : null;
-    if (clearNote) {
-      store.patch(id, { queuePaused: true, queueNote: clearNote });
-      return;
-    }
-    if (!cur || !cur.alive || cur.pending.length) return;
+    // （判定と再開時の動きは lib/queue.js の dispatchSendStep・clearPauseNote と CLEAR_UNCONFIRMED_PAUSE_NOTE）
+    const step = dispatchSendStep(item, before, cur);
+    if (step.type === 'pause') store.patch(id, { queuePaused: true, queueNote: step.note });
+    if (step.type !== 'send') return;
     const sentAt = Date.now();
-    await tmux.sendText(cur.paneId, item.text);
+    await tmux.sendText(cur.paneId, item.text, id);
     const now = Date.now();
     store.patch(id, {
       queue: cur.queue.filter((x) => x.id !== item.id),
@@ -468,7 +453,7 @@ async function startHandoff(a) {
     queueNote: HANDOFF_PAUSE_NOTE,
   });
   try {
-    await tmux.sendText(a.paneId, buildMemoPrompt(marker));
+    await tmux.sendText(a.paneId, buildMemoPrompt(marker), a.id);
   } catch (e) {
     finishHandoff(a.id, 'failed', `引き継ぎメモの指示を送れませんでした: ${e.message}（/clear は送っていません）`);
     throw httpError(500, `引き継ぎメモの指示を送れませんでした: ${e.message}`);
@@ -520,7 +505,7 @@ async function advanceHandoff(id) {
         const file = saveMemo(a, step.memo);
         store.patch(id, { handoff: { ...a.handoff, stage: 'clear', memoFile: file, clearSentAt: Date.now() }, activity: '/clear で会話をリセットしています…' });
         try {
-          await tmux.sendText(a.paneId, '/clear');
+          await tmux.sendText(a.paneId, '/clear', a.id);
         } catch (e) {
           finishHandoff(id, 'failed', `/clear を送れませんでした: ${e.message}（メモは ${file} に保存しています）`);
         }
@@ -536,7 +521,7 @@ async function advanceHandoff(id) {
           break;
         }
         try {
-          await tmux.sendText(a.paneId, buildResumePrompt(memo, file));
+          await tmux.sendText(a.paneId, buildResumePrompt(memo, file), a.id);
         } catch (e) {
           finishHandoff(id, 'failed', `新しいセッションに再開の指示を送れませんでした: ${e.message}（メモは ${file} に保存しています）`);
           break;
@@ -674,7 +659,7 @@ async function api(req, res, url) {
       if (!text.trim()) throw httpError(400, 'メッセージが空です');
       const blocked = sendBlockReason(a);
       if (blocked) throw Object.assign(httpError(409, blocked), { code: 'blocked' });
-      await tmux.sendText(a.paneId, text);
+      await tmux.sendText(a.paneId, text, a.id);
       return send(res, 200, { ok: true });
     }
     case 'queue':
@@ -682,7 +667,7 @@ async function api(req, res, url) {
       return send(res, 200, { ok: true, queue: store.get(a.id).queue });
     case 'keys': {
       if (!a.alive) throw httpError(409, 'エージェントは停止しています');
-      await tmux.sendKey(a.paneId, String(body.key));
+      await tmux.sendKey(a.paneId, String(body.key), a.id);
       // 実行中の Esc / Ctrl+C は中断扱いにします（中断では Stop hook が来ないため）
       if ((body.key === 'Escape' || body.key === 'C-c') && a.state === 'running') {
         // 中断した直後に次のキューが流れないよう一時停止もします
