@@ -34,6 +34,7 @@ import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFi
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
 import { effortChangeBlockReason, effortToFollow, isEffortValue } from './public/effort.js';
 import * as tmux from './lib/tmux.js';
+import { resolvePanes } from './lib/panes.js';
 import { readContextTokens, readEffortChange, readTranscript, readTranscriptImage } from './lib/transcript.js';
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, listen, listenErrorMessage, sendImage, serveStatic } from './lib/http.js';
@@ -111,6 +112,7 @@ async function createAgent(body) {
   const base = { id, name, model, cwd, permissionMode, effort, coat, sessionId: randomUUID(), createdAt: Date.now(), processStartedAt: Date.now() };
   const prompt = String(body.prompt || '').trim();
   const { windowId, paneId } = await tmux.createWindow({
+    agentId: id,
     name: name.replace(/[^\w.-]+/g, '_'),
     cwd,
     env: agentEnv(base),
@@ -138,12 +140,14 @@ async function respawnAgent(a, activity) {
   const resume = !!(a.transcriptPath && fs.existsSync(a.transcriptPath));
   if (!resume) a.sessionId = randomUUID();
   const command = buildCommand(a, { resume });
-  const panes = await tmux.listPanes();
-  if (a.paneId && panes.has(a.paneId)) {
-    await tmux.respawnPane({ paneId: a.paneId, cwd: a.cwd, env: agentEnv(a), command });
+  // 覚えているペイン ID が別のエージェントのペインに使われている場合に、そのプロセスを終了させないよう、持ち主を確かめてから使います
+  const owned = resolvePanes(store.list(), await tmux.listPanes()).get(a.id)?.pane;
+  if (owned) {
+    await tmux.respawnPane({ agentId: a.id, paneId: a.paneId, cwd: a.cwd, env: agentEnv(a), command });
     store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
   } else {
     const { windowId, paneId } = await tmux.createWindow({
+      agentId: a.id,
       name: a.name.replace(/[^\w.-]+/g, '_'),
       cwd: a.cwd,
       env: agentEnv(a),
@@ -303,17 +307,22 @@ function heartbeat() {
 // プロセスが死んだペインを検出します（hook では拾えないクラッシュへの対策です）
 async function reconcile() {
   const panes = await tmux.listPanes();
+  // ペイン ID は tmux のサーバーが変わると使い回されるため、ID があるかどうかではなく、そのエージェントのペインかどうかで判定します
+  const resolved = resolvePanes(store.list(), panes);
   for (const a of store.list()) {
     // hook が居なくなった要求は取り下げます
     if (a.pending.some((p) => !pidAlive(p.hookPid))) {
       store.dropPending(a, (p) => !pidAlive(p.hookPid), 'stale');
       store.changed(a.id);
     }
-    const p = a.paneId && panes.get(a.paneId);
+    const { pane: p, foreign } = resolved.get(a.id) ?? { pane: null, foreign: false };
     const alive = !!p && !p.dead;
+    // 別のエージェントのウィンドウを指している ID は消します。削除・「tmux で表示」・ステータス行の更新などが別のウィンドウに効かないようにするためです。
+    // 状態の更新と同じ patch で消すのは、状態の変化を受けたステータス行の更新が、消す前の ID で別のウィンドウに書き込まないようにするためです
+    const clearIds = foreign ? { paneId: null, windowId: null } : {};
     if (alive !== a.alive || (!alive && a.state !== 'ended')) {
-      store.patch(a.id, alive ? { alive } : { alive, state: 'ended', activity: p ? 'プロセスが終了しました' : 'ウィンドウがありません', stateSince: Date.now() });
-    }
+      store.patch(a.id, alive ? { alive } : { alive, state: 'ended', activity: p ? 'プロセスが終了しました' : 'ウィンドウがありません', stateSince: Date.now(), ...clearIds });
+    } else if (foreign) store.patch(a.id, clearIds);
     if (p && p.windowId !== a.windowId) store.patch(a.id, { windowId: p.windowId });
   }
 }
@@ -662,6 +671,8 @@ async function api(req, res, url) {
     case 'effort':
       return send(res, 200, { ok: true, ...(await changeEffort(a, body)) });
     case 'focus':
+      // 別のエージェントのウィンドウを指していた ID は生存確認で消しているため、ないときは操作しません
+      if (!a.windowId) throw httpError(409, 'tmux のウィンドウがありません。再起動すると新しいウィンドウで起動します');
       await tmux.focusWindow(a.windowId);
       return send(res, 200, { ok: true });
     default:
