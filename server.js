@@ -38,6 +38,7 @@ import {
   clearFinished,
   dispatchSendStep,
   dispatchStartStep,
+  exitWatchPatch,
   localCommandPatch,
   mayBeLocalCommand,
   readyForNext,
@@ -46,6 +47,7 @@ import {
 import { buildMemoPrompt, buildResumePrompt, formatMemoFile, handoffStep, memoFileName, parseMemoFile, queueRestoreFields } from './lib/handoff.js';
 import { handoffBlockReason, isHandoffActive } from './public/handoff.js';
 import { effortChangeBlockReason, effortToFollow } from './public/effort.js';
+import { EXIT_COMMAND, EXITING_REASON, exitBlockReason } from './public/exit.js';
 import { buildCommand as buildLaunchCommand, effortOption, requestedEffort, shq } from './lib/launch.js';
 import * as tmux from './lib/tmux.js';
 import { resolvePanes } from './lib/panes.js';
@@ -158,7 +160,7 @@ async function respawnAgent(a, activity) {
   const owned = resolvePanes(store.list(), await tmux.listPanes()).get(a.id)?.pane;
   if (owned) {
     await tmux.respawnPane({ agentId: a.id, paneId: a.paneId, cwd: a.cwd, env: agentEnv(a), command });
-    store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
+    store.patch(a.id, { sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now(), exitSentAt: null });
   } else {
     const { windowId, paneId } = await tmux.createWindow({
       agentId: a.id,
@@ -167,7 +169,7 @@ async function respawnAgent(a, activity) {
       env: agentEnv(a),
       command,
     });
-    store.patch(a.id, { windowId, paneId, sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now() });
+    store.patch(a.id, { windowId, paneId, sessionId: a.sessionId, state: 'starting', activity, alive: true, stateSince: Date.now(), processStartedAt: Date.now(), exitSentAt: null });
   }
 }
 
@@ -183,13 +185,46 @@ async function changeEffort(a, body) {
   if (effort === (a.effort || '')) return { restarted: false };
   const reason =
     effortChangeBlockReason(a) ||
-    (a.alive && (dispatching.has(a.id) || restarting.has(a.id) || handoffBusy.has(a.id)) ? 'キューの送信中か、起動し直している最中です。少し待ってから変更してください' : null);
+    (a.alive && (dispatching.has(a.id) || restarting.has(a.id) || handoffBusy.has(a.id)) ? 'キューの送信中か、起動し直している最中です。少し待ってから変更してください' : null) ||
+    // 終わりかけのプロセスを起動し直すと、送った /exit と起動し直しのどちらが効くかが読めないため、終わるのを待ってもらいます
+    (a.alive && a.exitSentAt ? EXITING_REASON : null);
   if (reason) throw httpError(409, reason);
   // 保存値を先に更新します。起動し直しに失敗しても、次の再起動で新しい値が使われるようにするためです
   store.patch(a.id, { effort, effortSetAt: Date.now() });
   if (!a.alive) return { restarted: false };
   await restartAgent(a, { activity: `エフォートを「${effort || 'ユーザー設定に従う'}」にして起動し直しています…` });
   return { restarted: true };
+}
+
+/**
+ * 動いているエージェントに /exit を送って終了させます。送れるかどうかは public/exit.js の exitBlockReason が決め、
+ * ここではキューの送信中・起動し直しの最中・引き継ぎの段階の実行中といった、サーバだけが知っている状態を確かめます。
+ * tmux のウィンドウは remain-on-exit でペインが残るため、プロセスが終わると生存確認（reconcile）で「終了」になり、
+ * 後から「再起動」で同じペインに起動し直せます。
+ * exitSentAt（送った時刻）は、プロセスが終わるまでキューの自動送信を止める印です（isBusy）。
+ * 終わったときと、待っても終わらなかったときの外し方は lib/queue.js の exitWatchPatch が決めます（settleExit）
+ */
+async function exitAgent(a) {
+  const reason =
+    exitBlockReason(a) ||
+    (dispatching.has(a.id) || restarting.has(a.id) || handoffBusy.has(a.id) ? 'キューの送信中か、起動し直している最中です。少し待ってから終了してください' : null);
+  if (reason) throw httpError(409, reason);
+  clearTimeout(dispatchTimers.get(a.id));
+  // 送る前に印を付けます。送信を待つ間に状態が変わっても、キューの自動送信が次の項目を送らないようにするためです
+  store.patch(a.id, { exitSentAt: Date.now(), activity: '終了しています…' });
+  try {
+    await tmux.sendText(a.paneId, EXIT_COMMAND, a.id);
+  } catch (e) {
+    // 送れなかった場合は印を外し、キューの自動送信が止まったままにならないようにします
+    store.patch(a.id, { exitSentAt: null, activity: `終了を指示できませんでした: ${e.message}` });
+    throw e;
+  }
+}
+
+/** 終了を送ったエージェントの印を、プロセスが終わったか、待っても終わらなかったときに外します（判定は lib/queue.js の exitWatchPatch） */
+function settleExit(id) {
+  const fields = exitWatchPatch(store.get(id), Date.now());
+  if (fields) store.patch(id, fields);
 }
 
 /**
@@ -389,8 +424,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dispatching = new Set();
 const dispatchTimers = new Map();
 
-// 送れる状態かどうかは lib/queue.js の readyForNext が決め、ここでは送信中・起動し直し中かどうかだけを渡します
-const isBusy = (id) => dispatching.has(id) || restarting.has(id);
+// 送れる状態かどうかは lib/queue.js の readyForNext が決め、ここでは送信中・起動し直し中・終了を待っている最中かどうかだけを渡します。
+// 終了を待っている間は、/exit の後に入力した項目が終わりかけの TUI に入って失われないよう送りません
+const isBusy = (id) => dispatching.has(id) || restarting.has(id) || !!store.get(id)?.exitSentAt;
 
 // 状態が変わるたびに、少し待ってから次のタスクを送れるか確認します
 store.on('change', (id) => {
@@ -469,6 +505,7 @@ async function startHandoff(a) {
   const reason =
     handoffBlockReason(a) ||
     (dispatching.has(a.id) || handoffBusy.has(a.id) ? 'キューの送信中です。少し待ってから実行してください' : null) ||
+    (a.exitSentAt ? EXITING_REASON : null) ||
     (!fs.existsSync(a.transcriptPath) ? 'まだ会話がありません' : null);
   if (reason) throw httpError(409, reason);
   clearTimeout(dispatchTimers.get(a.id));
@@ -721,6 +758,9 @@ async function api(req, res, url) {
     case 'restart':
       await restartAgent(a);
       return send(res, 200, { ok: true });
+    case 'exit':
+      await exitAgent(a);
+      return send(res, 200, { ok: true });
     case 'effort':
       return send(res, 200, { ok: true, ...(await changeEffort(a, body)) });
     case 'focus':
@@ -765,10 +805,12 @@ setInterval(() => reconcile().catch(() => {}), 2000);
 // 引き継ぎの待ち時間の上限と、Stop の後に transcript へメモが書き込まれるのを待つ間は、イベントが届かなくても判定し直します。
 // コンテキスト量も、イベントの後に transcript へ書き込まれた応答を取りこぼさないよう定期的に確かめます（追記分だけを読みます）。
 // TUI で実行した /effort はフックのイベントを伴わないため、同じく定期的に確かめます。
-// 利用上限の記録もステータスラインから書かれ、イベントを伴わないため、ここで更新時刻を確かめます
+// 利用上限の記録もステータスラインから書かれ、イベントを伴わないため、ここで更新時刻を確かめます。
+// 終了を送ったエージェントも、プロセスが終わったか・待ち時間を過ぎたかをここで確かめ、自動送信を止める印を外します
 setInterval(() => {
   refreshUsage();
   for (const a of store.list()) {
+    if (a.exitSentAt) settleExit(a.id);
     refreshContext(a.id);
     refreshEffort(a.id);
     if (isHandoffActive(a.handoff)) advanceHandoff(a.id).catch((e) => console.error(e));

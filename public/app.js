@@ -8,6 +8,7 @@ import { thumbsHtml } from './images.js';
 import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
 import { contextOver, contextTitle, formatContext, handoffBlockReason, handoffStageLabel, isHandoffActive } from './handoff.js';
 import { effortChangeBlockReason } from './effort.js';
+import { exitBlockReason } from './exit.js';
 import { usageReceivedLabel, usageRows } from './usage.js';
 
 const $ = (s) => document.querySelector(s);
@@ -328,7 +329,7 @@ function renderDetail() {
   $('#d-act').textContent = a.activity || '';
   $('#d-elapsed').dataset.since = since || '';
   $('#d-elapsed').textContent = elapsed(since);
-  $('#btn-restart').disabled = a.alive;
+  renderRestartExit(a);
   renderContext(a);
   renderHandoff(a);
   renderEffort(a);
@@ -363,6 +364,24 @@ function renderEffort(a) {
     : a.alive
       ? '変更すると、会話を引き継いだまま新しいエフォートでエージェントを起動し直します'
       : 'プロセスは終了しています。変更した値は次の再起動で使われます';
+}
+
+/**
+ * 「再起動」と「終了」を切り替えるボタンです。プロセスが動いている間は「終了」（/exit を送る）、終了している間は「再起動」にします。
+ * 終了を送れない間は無効にし、理由を添えます
+ */
+function renderRestartExit(a) {
+  const btn = $('#btn-restart');
+  if (!a.alive) {
+    btn.textContent = '再起動';
+    btn.disabled = false;
+    btn.title = '会話の記録があれば --resume で続きから、なければ新しいセッションで起動します';
+    return;
+  }
+  const reason = exitBlockReason(a);
+  btn.textContent = '終了';
+  btn.disabled = !!reason;
+  btn.title = reason ? `終了できません: ${reason}` : '/exit を送って Claude Code を終了します。終了後は「再起動」で起動し直せます';
 }
 
 /** 「引き継いでリセット」のボタンと、段階・結果の表示です */
@@ -835,11 +854,21 @@ $('#d-effort').addEventListener('change', async (e) => {
     toast(err.message);
   }
 });
+// 動いている間は「終了」、終了している間は「再起動」として働きます（表示の切り替えは renderRestartExit）
 $('#btn-restart').addEventListener('click', async () => {
   const a = selected();
   if (!a) return;
+  if (a.alive) {
+    if (exitBlockReason(a)) return;
+    const ok = confirm(
+      `「${a.name}」を終了しますか？\n\n` +
+        '/exit を送って Claude Code を終了します。バックグラウンドで動いている処理も止まります。\n' +
+        '終了後は「再起動」で、会話を引き継いで起動し直せます。',
+    );
+    if (!ok) return;
+  }
   try {
-    await api('POST', `/api/agents/${a.id}/restart`);
+    await api('POST', `/api/agents/${a.id}/${a.alive ? 'exit' : 'restart'}`);
   } catch (e) {
     toast(e.message);
   }

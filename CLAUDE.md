@@ -9,12 +9,12 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 
 | パス | 役割 |
 |---|---|
-| `server.js` | HTTP サーバ（API・SSE・静的ファイル配信）。エージェントの作成・再起動・削除、送信ガード、タスクキューの自動送信、対話要求への回答の書き出し、ペインの生存確認、コンテキスト量の更新、「引き継いでリセット」の段階の実行（tmux への送信とメモの保存）、エフォートの変更（保存値の更新と `--resume` での起動し直し）と TUI での `/effort` への追従、利用上限の使用率の記録の読み込みと配信（SSE の `usage` イベント）を行う |
+| `server.js` | HTTP サーバ（API・SSE・静的ファイル配信）。エージェントの作成・再起動・終了（`/exit` の送信）・削除、送信ガード、タスクキューの自動送信、対話要求への回答の書き出し、ペインの生存確認、コンテキスト量の更新、「引き継いでリセット」の段階の実行（tmux への送信とメモの保存）、エフォートの変更（保存値の更新と `--resume` での起動し直し）と TUI での `/effort` への追従、利用上限の使用率の記録の読み込みと配信（SSE の `usage` イベント）を行う |
 | `lib/config.js` | 設定値の集約。**import した時点で環境変数を読む**ため、環境変数は import より前に設定する |
 | `lib/launch.js` | エージェントの起動に関わる値の検証と起動コマンドの組み立て。作成フォームのエフォートの検証（`effortOption`）、エフォートの変更の要求の検証（`requestedEffort`）、`--effort` などを付けた claude の起動コマンドの組み立て（`buildCommand`。設定値は引数で受け取る）、シェル用の引用（`shq`） |
 | `lib/store.js` | エージェント一覧と状態機械。イベント JSONL の追記分を読み（`ingest`）、`applyEvent` で状態・対話要求（`pending`）・キューの一時停止を更新する |
 | `lib/interactions.js` | 対話要求の分類（`kindOf`）と、ブラウザからの回答を hook の出力 JSON に変換する処理（`buildOutput`） |
-| `lib/queue.js` | 送信ガード（`sendBlockReason`）、キュー操作の受け付け（`applyQueueOp`）、自動送信で送るか・一時停止するかの分岐（送れる状態かの `readyForNext`、送り始める前の `dispatchStartStep`、/clear の後に本文を送る直前の `dispatchSendStep`）、自動送信の前に提案に関わる理由で一時停止するかの判定（`proposalPauseNote`。判断待ちの提案の有無と、キューの先頭の判断が対象とする提案との照合を行う。画面とそろえるため `public/triage.js` の `findOpenProposals` と `proposalKey` を使う）、キューから送ったスラッシュコマンドがローカルコマンドとして終わったか・ダイアログのために一時停止するかの判定（`localCommandPatch`）。エージェントの状態だけを見て判断し、Store への反映や tmux への送信は `server.js` が行う |
+| `lib/queue.js` | 送信ガード（`sendBlockReason`）、キュー操作の受け付け（`applyQueueOp`）、自動送信で送るか・一時停止するかの分岐（送れる状態かの `readyForNext`、送り始める前の `dispatchStartStep`、/clear の後に本文を送る直前の `dispatchSendStep`）、自動送信の前に提案に関わる理由で一時停止するかの判定（`proposalPauseNote`。判断待ちの提案の有無と、キューの先頭の判断が対象とする提案との照合を行う。画面とそろえるため `public/triage.js` の `findOpenProposals` と `proposalKey` を使う）、キューから送ったスラッシュコマンドがローカルコマンドとして終わったか・ダイアログのために一時停止するかの判定（`localCommandPatch`）、「終了」で `/exit` を送った後にプロセスが終わったか・待っても終わらずに一時停止するかの判定（`exitWatchPatch`）。エージェントの状態だけを見て判断し、Store への反映や tmux への送信は `server.js` が行う |
 | `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する。画像は参照だけを項目に持たせ、画像 API の要求時に本体を読み出す（`readTranscriptImage`）。コンテキスト量は追記分だけを読んで求める（`readContextTokens`）。TUI で実行された `/effort` の結果も同じく追記分から読み取る（`readEffortChange`。出力の解釈は `effortFromCommandOutput`）。ローカルコマンドの出力が最後に記録された時刻も追記分から求める（`readLocalCommandOutputAt`） |
 | `lib/handoff.js` | 「引き継いでリセット」の段階の判定（`handoffStep`）、指示文の組み立て、transcript からのメモの取り出し（`extractMemo`）、終了時のキューの戻し方（`queueRestoreFields`）。状態だけを見て判断し、送信や保存は `server.js` が行う |
 | `lib/subagents.js` | サブエージェントの一覧と状態を、親のセッションの `subagents/` にある記録（meta.json と transcript）から組み立てる（`listSubagents`）。サブエージェントの会話の読み出し（`readSubagentTranscript`）もここで行い、`subagents/` の外を読まないよう確かめる |
@@ -26,7 +26,7 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |
 | `hooks/statusline.cjs` | ステータスラインのコマンド。渡された JSON の `rate_limits` を取り出して（`pickRateLimits`）、古い値で戻さないよう枠ごとにまとめて（`mergeUsage`）`usage.json` に記録する。受け取った時刻は API の応答があったとき（`isFresh`）か値が新しくなったときだけ進める。利用者や作業ディレクトリの設定にあるステータスライン（`userStatusLine`）を同じ入力で実行して出力をそのまま表示する |
 | `hooks/summarize.cjs` | ツール入力の 1 行要約（hook とサーバの両方から使う） |
-| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`handoff.js`（コンテキスト量の表記と、「引き継いでリセット」を実行できるかの判定。サーバも使う）、`effort.js`（エフォートの選択肢、変更できるかの判定（`effortChangeBlockReason`）、TUI での変更を保存値に反映するかの判定（`effortToFollow`）。サーバも使う）、`usage.js`（利用上限のバーの表示内容と時刻の表記）、`app.js` |
+| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`handoff.js`（コンテキスト量の表記と、「引き継いでリセット」を実行できるかの判定。サーバも使う）、`effort.js`（エフォートの選択肢、変更できるかの判定（`effortChangeBlockReason`）、TUI での変更を保存値に反映するかの判定（`effortToFollow`）。サーバも使う）、`exit.js`（「終了」で `/exit` を送れるかの判定（`exitBlockReason`）。サーバも使う）、`usage.js`（利用上限のバーの表示内容と時刻の表記）、`app.js` |
 | `public/vendor/` | 利用者の了承を得て同梱しているブラウザ用ライブラリ（現在は mermaid）。配布ファイルを改変せずに置き、取得元・照合方法・更新手順は各ディレクトリの `README.md` に記載する |
 | `test/` | `node:test` による単体テスト（Claude を起動しない） |
 | `scripts/dev.mjs` | 開発用ハブのランチャー |
