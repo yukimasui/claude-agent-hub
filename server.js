@@ -184,9 +184,22 @@ async function changeEffort(a, body) {
   return { restarted: true };
 }
 
+/**
+ * エージェントを削除します。ウィンドウが別のエージェント（またはハブのものではないウィンドウ）に使われていれば閉じずに記録だけを削除し、
+ * そのことを応答に含めるための文を返します（閉じたか、閉じるウィンドウがなければ null）。
+ * ウィンドウを閉じられなくても記録の削除は続けます。記録の削除は別のエージェントに影響せず、利用者の求めた操作を果たせるためです
+ */
 async function deleteAgent(a) {
-  if (a.windowId) await tmux.killWindow(a.windowId).catch(() => {});
+  let note = null;
+  if (a.windowId) {
+    await tmux.killWindow(a.windowId, a.id).catch((e) => {
+      if (e.code !== 'foreign-pane') return;
+      note = `${e.message}。エージェントの記録は削除しました`;
+      console.warn(`エージェント ${a.id}（${a.name}）を削除しました。ウィンドウ ${a.windowId} は別のエージェント（またはハブのものではないウィンドウ）に使われているため、閉じていません`);
+    });
+  }
   store.remove(a.id);
+  return note;
 }
 
 // ---------- 監視ループ ----------
@@ -197,7 +210,7 @@ store.on('change', (id) => {
   const a = store.get(id);
   if (!a || !a.windowId || tmuxState.get(id) === a.state) return;
   tmuxState.set(id, a.state);
-  tmux.setWindowState(a.windowId, a.state).catch(() => {});
+  tmux.setWindowState(a.windowId, a.state, a.id).catch(() => {});
 });
 
 // ---------- サブエージェント ----------
@@ -634,8 +647,8 @@ async function api(req, res, url) {
   if (!action) {
     if (req.method === 'GET') return send(res, 200, publicAgent(a));
     if (req.method === 'DELETE') {
-      await deleteAgent(a);
-      return send(res, 200, { ok: true });
+      const note = await deleteAgent(a);
+      return send(res, 200, note ? { ok: true, windowKept: true, note } : { ok: true });
     }
     throw httpError(405, 'Method not allowed');
   }
@@ -648,7 +661,12 @@ async function api(req, res, url) {
   }
   if (req.method === 'GET' && action === 'screen') {
     if (!a.alive) return send(res, 200, { text: '' });
-    return send(res, 200, { text: await tmux.capturePane(a.paneId).catch(() => '') });
+    // 別のエージェントのペインだった場合だけは、空の画面ではなく理由を返します（送信と同じく 409 です）。それ以外の失敗はこれまでどおり空の画面です
+    const text = await tmux.capturePane(a.paneId, a.id).catch((e) => {
+      if (e.code === 'foreign-pane') throw e;
+      return '';
+    });
+    return send(res, 200, { text });
   }
   if (req.method !== 'POST') throw httpError(405, 'Method not allowed');
 
@@ -690,7 +708,7 @@ async function api(req, res, url) {
     case 'focus':
       // 別のエージェントのウィンドウを指していた ID は生存確認で消しているため、ないときは操作しません
       if (!a.windowId) throw httpError(409, 'tmux のウィンドウがありません。再起動すると新しいウィンドウで起動します');
-      await tmux.focusWindow(a.windowId);
+      await tmux.focusWindow(a.windowId, a.id);
       return send(res, 200, { ok: true });
     default:
       throw httpError(404, 'Not found');

@@ -6,13 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { parsePanes } from '../lib/panes.js';
 
-let execWithInput, readEnviron, sendText, sendKey;
+let execWithInput, readEnviron, sendText, sendKey, capturePane, focusWindow, killWindow, setWindowState;
 let home;
 before(async () => {
   // lib/config.js は import した時点で環境変数を読むため、本番や開発用のデータ置き場に触れないよう一時ディレクトリを指定します
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-tmux-test-'));
   process.env.AGENT_HUB_HOME = home;
-  ({ execWithInput, readEnviron, sendText, sendKey } = await import('../lib/tmux.js'));
+  ({ execWithInput, readEnviron, sendText, sendKey, capturePane, focusWindow, killWindow, setWindowState } = await import('../lib/tmux.js'));
 });
 after(() => fs.rmSync(home, { recursive: true, force: true }));
 
@@ -85,8 +85,9 @@ test('プロセスの環境変数が空なら、読めなかったもの（null�
 
 /**
  * PATH の先頭に偽の tmux を置いて fn を実行し、呼ばれた tmux のサブコマンドを順に返します。
- * pane は display-message（送信直前のペインの確認）に返す 1 行（PANE_FORMAT の形）で、null なら display-message を失敗させます。
- * 本物の tmux を使わないのは、利用者の tmux のセッションに触れずに、送信の手順だけを確かめるためです。
+ * pane は display-message（操作直前のペインの確認）と list-panes（操作直前のウィンドウ内のペインの確認）に返す行（PANE_FORMAT の形）で、
+ * null ならどちらも失敗させます。capture-pane には固定の画面の文字列を返します。
+ * 本物の tmux を使わないのは、利用者の tmux のセッションに触れずに、操作の手順だけを確かめるためです。
  */
 async function withFakeTmux(pane, fn) {
   const dir = fs.mkdtempSync(path.join(home, 'fake-tmux-'));
@@ -98,7 +99,8 @@ async function withFakeTmux(pane, fn) {
       'printf "%s\\n" "$1" >> "$FAKE_TMUX_LOG"',
       'case "$1" in',
       '  fake-check) echo fake-tmux; exit 0 ;;',
-      '  display-message) if [ -n "$FAKE_TMUX_FAIL" ]; then echo "can\'t find pane: $4" >&2; exit 1; fi; printf "%s\\n" "$FAKE_TMUX_PANE" ;;',
+      '  display-message|list-panes) if [ -n "$FAKE_TMUX_FAIL" ]; then echo "can\'t find pane: $4" >&2; exit 1; fi; printf "%s\\n" "$FAKE_TMUX_PANE" ;;',
+      '  capture-pane) echo fake-screen ;;',
       '  load-buffer) cat > /dev/null ;;',
       'esac',
       'exit 0',
@@ -149,4 +151,74 @@ test('ペインの持ち主を確かめられないときは、送信を止め�
   // ペインの確認そのものに失敗した場合も、確認の前と同じく送信を試みます（ペインがなければ送信の側で失敗します）
   const failed = await withFakeTmux(null, () => sendKey('%2', 'Enter', 'a1'));
   assert.deepEqual(failed, ['display-message', 'send-keys']);
+});
+
+/**
+ * ハブのものではないペインのプロセスの代わりに、AGENT_HUB_AGENT を持たない子プロセスを起動して fn に PID を渡します。
+ * エージェント ID のオプションがないペインは /proc/<pid>/environ で持ち主を求めるため、実際に読める PID が要ります。
+ * 環境変数が空だと読めなかったもの（持ち主が分からない）として扱われるため、関係のない変数を 1 つだけ渡します
+ */
+async function withExternalProcess(fn) {
+  const { spawn } = await import('node:child_process');
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { env: { LANG: 'C' }, stdio: 'ignore' });
+  try {
+    return await fn(String(child.pid));
+  } finally {
+    child.kill();
+  }
+}
+
+test('画面の取得の直前にペインの持ち主を確かめ、別のエージェントのペインの画面は返さない', async () => {
+  const calls = await withFakeTmux(paneLine('a2'), () => assert.rejects(capturePane('%2', 'a1'), (e) => isForeign(e) && /画面を取得しませんでした/.test(e.message)));
+  assert.deepEqual(calls, ['display-message']);
+  // ハブのものではないペインも同じです
+  const external = await withExternalProcess((pid) =>
+    withFakeTmux(['%2', '0', '@2', pid, ''].join('\t'), () => assert.rejects(capturePane('%2', 'a1'), isForeign)),
+  );
+  assert.deepEqual(external, ['display-message']);
+});
+
+test('画面の取得は、そのエージェントのペインか、持ち主を確かめられないペインならこれまでどおり行う', async () => {
+  const own = await withFakeTmux(paneLine('a1'), async () => assert.equal((await capturePane('%2', 'a1')).trim(), 'fake-screen'));
+  assert.deepEqual(own, ['display-message', 'capture-pane']);
+  const legacy = await withFakeTmux(['%2', '1', '@2', '123', ''].join('\t'), async () => assert.equal((await capturePane('%2', 'a1')).trim(), 'fake-screen'));
+  assert.deepEqual(legacy, ['display-message', 'capture-pane']);
+  const failed = await withFakeTmux(null, () => capturePane('%2', 'a1'));
+  assert.deepEqual(failed, ['display-message', 'capture-pane']);
+});
+
+/**
+ * ウィンドウ @2 のペインの一覧（list-panes の出力）を、持ち主だけから作ります。
+ * 空文字（ハブのものではないペイン）は、オプションがなく、プロセスの環境変数に AGENT_HUB_AGENT がないペインとして作るため、externalPid を使います
+ */
+const windowLines = (owners, externalPid = '') =>
+  owners.map((owner, i) => [`%${i + 2}`, '0', '@2', owner === '' ? externalPid : '', owner ?? ''].join('\t')).join('\n');
+
+test('削除・「tmux で表示」・ステータス行の更新の直前にウィンドウ内のペインの持ち主を確かめ、別のエージェントのウィンドウは操作しない', async () => {
+  await withExternalProcess(async (pid) => {
+    for (const owners of [['a2'], [''], ['a1', 'a2']]) {
+      const calls = await withFakeTmux(windowLines(owners, pid), async () => {
+        await assert.rejects(killWindow('@2', 'a1'), (e) => isForeign(e) && /ウィンドウを閉じませんでした/.test(e.message));
+        await assert.rejects(focusWindow('@2', 'a1'), (e) => isForeign(e) && /tmux で表示しませんでした/.test(e.message));
+        await assert.rejects(setWindowState('@2', 'running', 'a1'), isForeign);
+      });
+      // 確かめるだけで、kill-window・select-window・set-option は行いません
+      assert.deepEqual(calls, ['list-panes', 'list-panes', 'list-panes'], `持ち主: ${owners}`);
+    }
+  });
+});
+
+test('そのエージェントのウィンドウか、持ち主を確かめられないウィンドウは、これまでどおり操作する', async () => {
+  const expected = ['list-panes', 'kill-window', 'list-panes', 'select-window', 'switch-client', 'list-panes', 'set-option'];
+  // 利用者がウィンドウを分割して、ハブのものではないペインが加わった場合も、自分のペインがあれば操作します
+  await withExternalProcess(async (pid) => {
+    for (const pane of [windowLines(['a1']), windowLines(['a1', ''], pid), windowLines([null]), null]) {
+      const calls = await withFakeTmux(pane, async () => {
+        await killWindow('@2', 'a1');
+        await focusWindow('@2', 'a1');
+        await setWindowState('@2', 'running', 'a1');
+      });
+      assert.deepEqual(calls, expected, `一覧: ${pane}`);
+    }
+  });
 });

@@ -570,7 +570,10 @@ async function pollScreen() {
   try {
     const { text } = await api('GET', `/api/agents/${a.id}/screen`);
     if (a.id === selectedId) $('#term').textContent = text || '（表示できる画面がありません）';
-  } catch {}
+  } catch (e) {
+    // ペインが別のエージェントのものだった場合は、前の画面を残さず理由を表示します（別のエージェントの画面と取り違えないためです）
+    if (e.code === 'foreign-pane' && a.id === selectedId) $('#term').textContent = e.message;
+  }
 }
 
 // ---------- 操作 ----------
@@ -810,7 +813,8 @@ $('#btn-kill').addEventListener('click', async () => {
   const a = selected();
   if (!a || !confirm(`「${a.name}」を削除しますか？ tmux ウィンドウも終了します。`)) return;
   try {
-    await api('DELETE', `/api/agents/${a.id}`);
+    const r = await api('DELETE', `/api/agents/${a.id}`);
+    if (r.windowKept) toast(r.note);
   } catch (e) {
     toast(e.message);
   }

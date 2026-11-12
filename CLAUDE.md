@@ -18,8 +18,8 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `lib/transcript.js` | Claude Code の transcript JSONL を会話表示用の項目に整形する。画像は参照だけを項目に持たせ、画像 API の要求時に本体を読み出す（`readTranscriptImage`）。コンテキスト量は追記分だけを読んで求める（`readContextTokens`）。TUI で実行された `/effort` の結果も同じく追記分から読み取る（`readEffortChange`。出力の解釈は `effortFromCommandOutput`）。ローカルコマンドの出力が最後に記録された時刻も追記分から求める（`readLocalCommandOutputAt`） |
 | `lib/handoff.js` | 「引き継いでリセット」の段階の判定（`handoffStep`）、指示文の組み立て、transcript からのメモの取り出し（`extractMemo`）、終了時のキューの戻し方（`queueRestoreFields`）。状態だけを見て判断し、送信や保存は `server.js` が行う |
 | `lib/subagents.js` | サブエージェントの一覧と状態を、親のセッションの `subagents/` にある記録（meta.json と transcript）から組み立てる（`listSubagents`）。サブエージェントの会話の読み出し（`readSubagentTranscript`）もここで行い、`subagents/` の外を読まないよう確かめる |
-| `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成とペインへのエージェント ID の付与、ペインの一覧とペインのプロセスの環境変数の読み出し（`readEnviron`。内容が空なら読めなかったものとする）、bracketed paste での送信とキー送信（送る直前にペインの持ち主を確かめ、別のエージェントのペインには送らない）、画面取得） |
-| `lib/panes.js` | tmux のペインがどのエージェントのものかの判定。ペインの一覧の解釈（`parsePanes`。ペインのオプション `@hub_agent` か、プロセスの環境変数 `AGENT_HUB_AGENT` で持ち主を求める）と、各エージェントがペインを持つか・別のエージェントのウィンドウを指しているかの判定（`resolvePanes`）。生存確認と起動し直しで使う。送信の直前に確かめたペインが送り先のエージェントのものかの判定（`sendTargetBlockReason`）もここで行う |
+| `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成とペインへのエージェント ID の付与、ペインの一覧とペインのプロセスの環境変数の読み出し（`readEnviron`。内容が空なら読めなかったものとする）、bracketed paste での送信とキー送信、画面取得、ウィンドウの削除・前面への表示・ステータス行の更新。これらは操作の直前にペイン（ウィンドウの操作ではウィンドウ内のペイン）の持ち主を確かめ、別のエージェントのものなら操作しない） |
+| `lib/panes.js` | tmux のペインがどのエージェントのものかの判定。ペインの一覧の解釈（`parsePanes`。ペインのオプション `@hub_agent` か、プロセスの環境変数 `AGENT_HUB_AGENT` で持ち主を求める）と、各エージェントがペインを持つか・別のエージェントのウィンドウを指しているかの判定（`resolvePanes`）。生存確認と起動し直しで使う。操作の直前に確かめたペインやウィンドウがそのエージェントのものかの判定（ペインは `paneTargetBlockReason`、ウィンドウは `windowTargetBlockReason`）もここで行う |
 | `lib/watch.js` | フォルダの監視（`fs.watch`）。error やフォルダの削除で監視が止まったら、落ちずに張り直す |
 | `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`）、静的ファイルの配信（`serveStatic`。ETag を `staticEtag` で作り、`isNotModified` が一致を判定して 304 を返す）、待ち受けの開始（`listen`。失敗の理由は `listenErrorMessage` でメッセージにする） |
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |

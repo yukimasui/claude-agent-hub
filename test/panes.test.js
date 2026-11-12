@@ -2,7 +2,7 @@
 // tmux のサーバーが終了した後に作ったエージェントが、終了済みのエージェントと同じペイン ID・ウィンドウ ID を割り当てられる場合（Issue #97）を中心にしています。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { PANE_FORMAT, agentIdFromEnviron, parsePanes, resolvePanes, sendTargetBlockReason } from '../lib/panes.js';
+import { PANE_FORMAT, agentIdFromEnviron, paneTargetBlockReason, parsePanes, resolvePanes, windowTargetBlockReason } from '../lib/panes.js';
 
 /** ペインの一覧（listPanes が返す形）を作ります。owner は確かめた持ち主で、null は分からないことを表します */
 const panesOf = (...list) => new Map(list.map(({ paneId, dead = false, windowId, owner = null }) => [paneId, { dead, windowId, owner }]));
@@ -125,16 +125,53 @@ test('ペインの一覧は、付けたエージェント ID を優先し、な�
   assert.equal(PANE_FORMAT.split('\t').length, 5);
 });
 
-test('送信の直前に確かめたペインが別のエージェントのもの（またはハブのものではない）なら、送らない理由を返す', () => {
-  // 生存確認（2 秒ごと）の間にペインの ID が重なった場合に、別のエージェントへ届くのを防ぐためです
-  assert.equal(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: 'a1' }), null);
-  assert.match(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: 'a2' }), /別のエージェント/);
-  assert.match(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: '' }), /別のエージェント/);
+test('操作の直前に確かめたペインが別のエージェントのもの（またはハブのものではない）なら、操作しない理由を返す', () => {
+  // 生存確認（2 秒ごと）の間にペインの ID が重なった場合に、送信や画面の取得が別のエージェントに効くのを防ぐためです
+  const block = (pane) => paneTargetBlockReason('a1', pane, '送信しませんでした');
+  assert.equal(block({ dead: false, windowId: '@2', owner: 'a1' }), null);
+  assert.match(block({ dead: false, windowId: '@2', owner: 'a2' }), /別のエージェント.*送信しませんでした/);
+  assert.match(block({ dead: false, windowId: '@2', owner: '' }), /別のエージェント.*送信しませんでした/);
+  // 理由の後半は、操作ごとに渡した文になります
+  assert.match(paneTargetBlockReason('a1', { dead: false, windowId: '@2', owner: 'a2' }, '画面を取得しませんでした'), /画面を取得しませんでした$/);
 });
 
-test('送信の直前に持ち主を確かめられなければ、送信を止めない', () => {
+test('操作の直前にペインの持ち主を確かめられなければ、操作を止めない', () => {
   // オプションを付ける前に作ったペインで /proc を読めない環境や、ペインを確かめられなかった場合（tmux の失敗など）です。
-  // 判断の材料がないのに止めると、正当な送信までできなくなるため、これまでどおり送ります（持ち主の判定は生存確認に任せます）
-  assert.equal(sendTargetBlockReason('a1', { dead: false, windowId: '@2', owner: null }), null);
-  assert.equal(sendTargetBlockReason('a1', undefined), null);
+  // 判断の材料がないのに止めると、正当な操作までできなくなるため、これまでどおり操作します（持ち主の判定は生存確認に任せます）
+  assert.equal(paneTargetBlockReason('a1', { dead: false, windowId: '@2', owner: null }, '送信しませんでした'), null);
+  assert.equal(paneTargetBlockReason('a1', undefined, '送信しませんでした'), null);
+});
+
+/** ウィンドウ内のペインの一覧（parsePanes の値の並び）を、持ち主だけから作ります */
+const windowOf = (...owners) => owners.map((owner) => ({ dead: false, windowId: '@2', owner }));
+
+test('ウィンドウ内に別のエージェントのペインがあれば、ウィンドウを操作しない理由を返す', () => {
+  // 削除はウィンドウごと閉じるため、別のエージェントのペインが 1 つでもあれば、その作業を失わせないよう止めます
+  const block = (panes) => windowTargetBlockReason('a1', panes, 'ウィンドウを閉じませんでした');
+  assert.match(block(windowOf('a2')), /別のエージェント.*ウィンドウを閉じませんでした$/);
+  assert.match(block(windowOf('a1', 'a2')), /別のエージェント/);
+  // 持ち主が分からないペインがあっても、別のエージェントのペインがあれば止めます
+  assert.match(block(windowOf(null, 'a2')), /別のエージェント/);
+});
+
+test('ウィンドウ内にハブのものではないペインしかなければ、ウィンドウを操作しない理由を返す', () => {
+  // tmux のサーバーが変わって、ウィンドウ ID が利用者の作ったウィンドウに割り当てられた場合です
+  assert.match(windowTargetBlockReason('a1', windowOf(''), 'tmux で表示しませんでした'), /ハブのものではない.*tmux で表示しませんでした$/);
+  assert.match(windowTargetBlockReason('a1', windowOf('', null), 'tmux で表示しませんでした'), /ハブのもの/);
+});
+
+test('ウィンドウ内にそのエージェントのペインがあれば、利用者が分割したペインがあってもウィンドウを操作する', () => {
+  // ハブが作ったウィンドウを利用者が分割すると、分割したペインにはエージェント ID がなく、ハブのものではないペインに見えます。
+  // それを理由に止めると、自分のウィンドウを閉じたり前面に出したりできなくなるため、自分のペインがあれば操作します
+  assert.equal(windowTargetBlockReason('a1', windowOf('a1'), 'ウィンドウを閉じませんでした'), null);
+  assert.equal(windowTargetBlockReason('a1', windowOf('a1', ''), 'ウィンドウを閉じませんでした'), null);
+  assert.equal(windowTargetBlockReason('a1', windowOf('a1', null), 'ウィンドウを閉じませんでした'), null);
+});
+
+test('ウィンドウ内のペインの持ち主を確かめられなければ、ウィンドウの操作を止めない', () => {
+  // 送信と同じく、判断の材料がないのに止めると正当な削除や表示までできなくなるためです
+  assert.equal(windowTargetBlockReason('a1', windowOf(null), 'ウィンドウを閉じませんでした'), null);
+  assert.equal(windowTargetBlockReason('a1', windowOf(null, null), 'ウィンドウを閉じませんでした'), null);
+  assert.equal(windowTargetBlockReason('a1', [], 'ウィンドウを閉じませんでした'), null);
+  assert.equal(windowTargetBlockReason('a1', undefined, 'ウィンドウを閉じませんでした'), null);
 });
