@@ -471,6 +471,8 @@ export function mountPending(root, items, respond, onError) {
 }
 
 // ---------- 履歴カード ----------
+// 履歴カードの見出しの右端には、会話の他の項目と同じく時刻を出します。time は app.js が組み立てた time 要素の HTML で、
+// 時刻の表記（public/timeline.js の itemTime）と「今日」の判定に使う現在時刻を、会話の他の項目とそろえるため呼び出し側から受け取ります
 
 function answeredSet(answer) {
   if (Array.isArray(answer)) return answer.map(String);
@@ -480,13 +482,13 @@ function answeredSet(answer) {
     .filter(Boolean);
 }
 
-export function questionHistory(it) {
+export function questionHistory(it, time = '') {
   const replied = it.status === 'rejected' && /^ユーザーは選択肢を選ばずに/.test(it.resultText || '');
   const status = it.status === 'answered' ? '回答済み' : replied ? '返信' : it.status === 'rejected' ? '未回答で終了' : '回答待ち';
   if (it.status === 'pending') {
     // 回答待ちの間は下のパネルで回答するので、履歴側は簡略表示にします
     return `<div class="hcard hcard-question hcard-compact">
-      <div class="hcard-head"><span class="badge st-waiting">${status}</span> 質問（下のパネルで回答できます）</div>
+      <div class="hcard-head"><span class="badge st-waiting">${status}</span> 質問（下のパネルで回答できます）${time}</div>
       ${(it.questions || []).map((q) => `<div class="q-text">・${inline(q.question)}</div>`).join('')}
     </div>`;
   }
@@ -517,28 +519,28 @@ export function questionHistory(it) {
     })
     .join('');
   return `<div class="hcard hcard-question">
-    <div class="hcard-head"><span class="badge ${it.status === 'answered' ? 'st-done' : it.status === 'rejected' ? 'st-ended' : 'st-waiting'}">${status}</span> 質問</div>
+    <div class="hcard-head"><span class="badge ${it.status === 'answered' ? 'st-done' : it.status === 'rejected' ? 'st-ended' : 'st-waiting'}">${status}</span> 質問${time}</div>
     ${qs}
     ${it.resultText && it.status !== 'answered' ? `<div class="muted hq-result">${esc(it.resultText)}</div>` : ''}
   </div>`;
 }
 
-export function planHistory(it) {
+export function planHistory(it, time = '') {
   const status = it.status === 'approved' ? '承認' : it.status === 'rejected' ? '差し戻し' : '承認待ち';
   const cls = it.status === 'approved' ? 'st-done' : it.status === 'rejected' ? 'st-ended' : 'st-waiting';
   const feedback = it.status === 'rejected' && it.resultText ? `<div class="hq-notes">${esc(it.resultText)}</div>` : '';
   return `<details class="hcard hcard-plan" data-key="plan-${esc(it.id)}"${it.status !== 'approved' ? ' open' : ''}>
-    <summary class="hcard-head"><span class="badge ${cls}">${status}</span> 計画</summary>
+    <summary class="hcard-head"><span class="badge ${cls}">${status}</span> 計画${time}</summary>
     <div class="md">${renderMarkdown(it.plan)}</div>
     ${feedback}
   </details>`;
 }
 
-export function todosHistory(it) {
+export function todosHistory(it, time = '') {
   const icon = { completed: '☑', in_progress: '◐', pending: '☐' };
   const items = (it.todos || [])
     .map((t) => `<li class="todo-${esc(t.status)}"><span class="mark">${icon[t.status] || '☐'}</span>${esc(t.status === 'in_progress' && t.activeForm ? t.activeForm : t.content)}</li>`)
     .join('');
   const done = (it.todos || []).filter((t) => t.status === 'completed').length;
-  return `<div class="hcard hcard-todos"><div class="hcard-head">TODO <span class="muted">${done}/${(it.todos || []).length}</span></div><ul class="todos">${items}</ul></div>`;
+  return `<div class="hcard hcard-todos"><div class="hcard-head">TODO <span class="muted">${done}/${(it.todos || []).length}</span>${time}</div><ul class="todos">${items}</ul></div>`;
 }

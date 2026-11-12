@@ -126,8 +126,8 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 .churu:hover { opacity: 0.6; }
 /* ドラッグ中はポインタに付いて動くよう、画面に対する位置（left / top は churu.js が設定します）に切り替えます */
 .churu.dragging { position: fixed; right: auto; bottom: auto; z-index: 50; opacity: 1; cursor: grabbing; filter: drop-shadow(0 2px 3px rgba(0, 0, 0, 0.5)); }
-/* 猫から離れた場所で離したときに元の場所へ戻る動きです（時間は churu.js の RETURN_MS とそろえます） */
-.churu.returning { transition: left 0.25s ease-out, top 0.25s ease-out, opacity 0.25s; opacity: 0.22; }
+/* 猫から離れた場所で離したときに元の場所へ戻る動きです（時間は churu.js が RETURN_MS から --churu-return に設定します） */
+.churu.returning { transition: left var(--churu-return) ease-out, top var(--churu-return) ease-out, opacity var(--churu-return); opacity: 0.22; }
 /* 食べられた後は隠し、時間が来たら（churu.js が eaten を外すと）ふわっと戻します */
 .churu.eaten { visibility: hidden; opacity: 0; transition: none; }
 
@@ -188,6 +188,8 @@ details.compact[open] { align-self: stretch; }
 .thumb img { display: block; height: 120px; width: auto; max-width: 240px; object-fit: contain; }
 
 .term { flex: 1; margin: 0; padding: 12px 16px; overflow: auto; background: #0a0b0e; font-family: var(--mono); font-size: 12.5px; line-height: 1.35; white-space: pre; }
+/* 画面の代わりに表示する説明（画面の取得を拒否した理由など）です。長い 1 行の文なので折り返し、画面の写しと見分けられるよう薄くします */
+.term.term-note { white-space: pre-wrap; color: var(--muted); font-family: inherit; font-size: 13px; }
 
 .composer { border-top: 1px solid var(--line); padding: 8px 16px 12px; background: var(--panel); display: grid; gap: 6px; }
 .quick { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
@@ -216,8 +218,15 @@ dialog.image-viewer { width: fit-content; max-width: 96vw; max-height: 96vh; pad
 .toast { position: fixed; right: 16px; bottom: 16px; background: var(--panel-2); border: 1px solid var(--waiting); padding: 8px 14px; border-radius: 8px; max-width: 420px; }
 
 @media (max-width: 760px) {
-  .app { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr; }
+  .app { grid-template-columns: 1fr; grid-template-rows: 40vh minmax(0, 1fr); }
+  /* 詳細のヘッダーが折り返して高くなると、詳細の中身（ヘッダー・状態の行・会話の最小の高さ・入力欄）が残りの高さに収まらなくなります。
+     はみ出した分で文書全体がスクロールすると、入力欄へのフォーカスなどで文書が送られてサイドバーの上部が画面外になるため、
+     スクロールは詳細の領域の中だけで行います。サイドバーも、高さが足りないときは自分の中でスクロールさせます */
+  .detail, .sidebar { overflow-y: auto; }
   .detail-head { flex-wrap: wrap; }
+  /* 操作のボタンは 1 文字ずつ折り返すと読みにくいため、ボタン単位で次の行へ送ります */
+  .actions { flex-wrap: wrap; }
+  .actions > * { white-space: nowrap; }
   /* 一覧の高さが限られるため、利用上限の 2 つの枠を横に並べて縦の幅を抑えます */
   .usage { grid-template-columns: 1fr 1fr; column-gap: 16px; }
   .usage-foot { grid-column: 1 / -1; }
@@ -317,6 +326,10 @@ details.hcard > summary { cursor: pointer; list-style: none; }
 details.hcard > summary::-webkit-details-marker { display: none; }
 details.hcard > summary::after { content: '▸'; color: var(--muted); margin-left: auto; }
 details.hcard[open] > summary::after { content: '▾'; }
+/* 履歴カードの時刻です。会話の他の項目の時刻（.msg-time）と同じく小さく薄く、見出しの右端に置きます。
+   計画のカードは開閉の印も右端に寄せているため、時刻があるときは印を時刻のすぐ右に並べます */
+.hcard-time { margin-left: auto; font-size: 10.5px; font-weight: normal; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+details.hcard > summary:has(.hcard-time)::after { margin-left: 8px; }
 .hq { display: grid; gap: 4px; }
 .hq + .hq { border-top: 1px dashed var(--line); padding-top: 8px; }
 .hq-opts { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }

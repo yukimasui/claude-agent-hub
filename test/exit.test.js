@@ -2,7 +2,7 @@
 // 送ってからプロセスが終わるまでの送信ガード・キューの自動送信の扱い、終わったときと終わらなかったときの印の外し方（lib/queue.js）を確かめます。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { EXITING_REASON, exitBlockReason } from '../public/exit.js';
+import { ENDING_REASON, EXITING_REASON, exitBlockReason } from '../public/exit.js';
 import {
   CLEAR_UNCONFIRMED_PAUSE_NOTE, ERROR_PAUSE_NOTE, EXIT_UNCONFIRMED_PAUSE_NOTE, EXIT_WAIT_MS, INTERRUPT_PAUSE_NOTE, LOCAL_COMMAND_PAUSE_NOTE,
   MANUAL_PAUSE_NOTE, PROPOSAL_PAUSE_NOTE, STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE,
@@ -30,8 +30,9 @@ test('入力が別の場所に入る状態や作業中は、状態ごとの理�
   assert.match(exitBlockReason(agent({ state: 'compacting' })), /中断（Esc）してから/);
   assert.match(exitBlockReason(agent({ handoff: { stage: 'memo' } })), /引き継いでリセット/);
   assert.match(exitBlockReason(agent({ handoff: { stage: 'clear' } })), /引き継いでリセット/);
-  // SessionEnd が届いてから生存確認で停止になるまでの間です
-  assert.match(exitBlockReason(agent({ state: 'ended' })), /応答完了.*待機中/);
+  // SessionEnd が届いてから生存確認で停止になるまでの間は、終了の途中であることを示します
+  assert.equal(exitBlockReason(agent({ state: 'ended' })), ENDING_REASON);
+  assert.match(ENDING_REASON, /終了処理中/);
   assert.match(exitBlockReason(null), /選択されていません/);
 });
 

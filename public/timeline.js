@@ -38,18 +38,36 @@ export function isTurnBusy(state) {
 
 // エージェントの応答に当たる項目です。ターンの終わりの時刻は、この中で最後のものの時刻とします
 const RESPONSE_ROLES = new Set(['assistant', 'tool', 'tool_error', 'question', 'plan', 'todos']);
+// 応答のうち、ツールの呼び出しに当たる項目です。これが最後の応答なら、エージェントはツールの結果を待っていて、ターンは続いています
+const TOOL_ROLES = new Set(['tool', 'tool_error', 'question', 'plan', 'todos']);
 
 /**
  * 新しいターンを始める項目かを返します。
  * - 利用者の発言: ただし処理中に送ってターンの途中で取り込まれた発言（queued）は、そのターンへの追加の指示なので区切りにしません
  * - スラッシュコマンド: スキルのように応答が続くものがあるため区切りにします。/clear や /effort のように応答のないものは、
  *   後ろに応答がないので所要時間は出ません（直前のターンを終わらせる区切りとしてだけ働きます）
- * - バックグラウンドのタスクの完了通知: ターンの終了後に届き、エージェントがそれを受けて作業を始めるため区切りにします
+ * - バックグラウンドのタスクの完了通知: ターンの終了後に届き、エージェントがそれを受けて作業を始めるため区切りにします。
+ *   ただし、続いているターンの途中に届いたもの（midTurn）は、呼び出し側で区切りから外します
  * 会話の圧縮（compact）やコマンドの出力は区切りにしません。自動の圧縮はターンの途中で起きて、その後も同じターンが続くためです
  */
 function startsTurn(it) {
   if (it.role === 'user') return !it.queued;
   return it.role === 'system' && (it.kind === 'command' || it.kind === 'notification');
+}
+
+/**
+ * 完了通知が、続いているターンの途中に届いたものかを返します。途中に届いた通知は区切りにせず、そのターンに含めます。
+ * ターンの終わりの目印（turnEnd）がある記録では、ターンが終わると close で cur.start が null になるため、ここには来ません。
+ * 目印のない記録では、ターンが終わったかを直前の項目から推し量ります。
+ * - 最後の応答がツールの呼び出し: 結果を待っている（または結果を受けて続ける）途中なので、ターンは続いています
+ * - 発言や完了通知の後にまだ応答がない: エージェントが応答を作っている途中なので、ターンは続いています。
+ *   ただしコマンドで始まったもの（/clear など）は応答がないまま終わるので、続いているとはみなしません
+ * - 最後の応答が本文（assistant）: ターンの最後の返答とみなし、通知を新しいターンの始まりにします
+ */
+function midTurn(cur, items) {
+  if (cur.start == null) return false;
+  if (cur.end) return TOOL_ROLES.has(items[cur.end.index].role);
+  return cur.startKind !== 'command';
 }
 
 /**
@@ -72,23 +90,27 @@ function startsTurn(it) {
  */
 export function turnDurations(items, { busy = false } = {}) {
   const out = new Map();
-  let start = null; // 今のターンを始めた項目の時刻（始まりが分からないときは null）
-  let end = null; // 今のターンの最後の応答 { index, t }
+  // start は今のターンを始めた項目の時刻（始まりが分からないときは null）、startKind はその項目の種類、
+  // end は今のターンの最後の応答 { index, t } です
+  const cur = { start: null, startKind: null, end: null };
   const close = (interrupted) => {
+    const { start, end } = cur;
     if (start != null && end && end.t >= start) out.set(end.index, { ms: end.t - start, interrupted, from: start, to: end.t });
-    start = null;
-    end = null;
+    cur.start = null;
+    cur.startKind = null;
+    cur.end = null;
   };
   for (const [i, it] of items.entries()) {
     const t = Date.parse(it.ts);
-    if (startsTurn(it)) {
+    if (startsTurn(it) && !(it.kind === 'notification' && midTurn(cur, items))) {
       close(false);
-      start = Number.isFinite(t) ? t : null;
-    } else if (start != null && Number.isFinite(t)) {
+      cur.start = Number.isFinite(t) ? t : null;
+      cur.startKind = it.kind || it.role;
+    } else if (cur.start != null && Number.isFinite(t)) {
       if (it.role === 'system' && it.kind === 'interrupt') {
-        end = { index: i, t };
+        cur.end = { index: i, t };
         close(true);
-      } else if (RESPONSE_ROLES.has(it.role)) end = { index: i, t };
+      } else if (RESPONSE_ROLES.has(it.role)) cur.end = { index: i, t };
     }
     // 始まりの分からないターンの終わりの目印でも区切ります。これより後の応答を、次の始まりの分からないターンに含めないためです
     if (it.turnEnd) close(false);

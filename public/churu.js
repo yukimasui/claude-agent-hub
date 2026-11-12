@@ -10,8 +10,12 @@ export const NEAR_PX = 24;
 export const DELIGHT_MS = 3500;
 // 食べられたちゅーるが隠し場所に戻るまでの時間です
 export const RESPAWN_MS = 4000;
-// 猫から離れた場所で離したときに、元の場所へ戻る動きの時間です（style.css の .churu.returning とそろえます）
-const RETURN_MS = 250;
+// 猫から離れた場所で離したときに、元の場所へ戻る動きの時間です。
+// style.css の .churu.returning の遷移時間は、mountChuru がこの値を CSS 変数 --churu-return に設定して使います。
+// 戻り終わりを待つ時間と CSS の遷移時間を 1 か所で決め、片方だけを変えてずれないようにするためです
+export const RETURN_MS = 250;
+// ドラッグの終わりに続くクリックを止める時間です
+export const CLICK_GUARD_MS = 400;
 
 // ---------- しぐさ ----------
 
@@ -43,24 +47,82 @@ export function activeGesture(entry, now) {
   return entry && now < entry.until ? entry.mood : null;
 }
 
-/** エージェントの猫に、until（ミリ秒の時刻）までのしぐさを設定します。ドラッグ中のように終わりが決まらないときは Infinity を渡します */
-export function setGesture(id, mood, until) {
-  gestures.set(String(id), { mood, until });
+/** entry から下のしぐさ（under）をたどり、now の時点で続いている最初のしぐさを返します。なければ null です */
+function topActive(entry, now) {
+  while (entry && !activeGesture(entry, now)) entry = entry.under;
+  return entry || null;
 }
 
-/** しぐさを取り消します。mood を渡したときは、そのしぐさのときだけ取り消します（後から設定した別のしぐさを消さないため） */
-export function clearGesture(id, mood) {
+/**
+ * エージェントの猫に、until（ミリ秒の時刻）までのしぐさを設定します。ドラッグ中のように終わりが決まらないときは Infinity を渡します。
+ * 喜んでいる最中にもう一度ちゅーるを近づけたときのように、時間の決まったしぐさが続いている猫に別のしぐさを重ねる場合は、
+ * 下のしぐさを under に覚えておきます。上のしぐさを取り消したときに、下のしぐさを残り時間の分だけ続けるためです。
+ * 終わりの決まらないしぐさ（なめる）は覚えません。ドラッグに付いているしぐさで、ドラッグが終われば続ける理由がないためです
+ */
+export function setGesture(id, mood, until, now = Date.now()) {
   const key = String(id);
-  if (!mood || gestures.get(key)?.mood === mood) gestures.delete(key);
+  let under = topActive(gestures.get(key), now);
+  // 同じしぐさを設定し直すとき（もう一度食べたときなど）は、前のしぐさを新しいもので置き換えます
+  if (under?.mood === mood) under = topActive(under.under, now);
+  const keep = under && Number.isFinite(under.until);
+  gestures.set(key, keep ? { mood, until, under: { mood: under.mood, until: under.until } } : { mood, until });
 }
 
-/** 今のしぐさの気分を返します。時間切れのしぐさは消して null を返し、元の状態の表示に戻します */
+/**
+ * しぐさを取り消します。mood を渡したときは、そのしぐさのときだけ取り消し（後から設定した別のしぐさを消さないため）、
+ * 下に続いているしぐさがあればそれに戻します。mood を渡さないときは、下のしぐさも含めてすべて取り消します
+ */
+export function clearGesture(id, mood, now = Date.now()) {
+  const key = String(id);
+  const entry = gestures.get(key);
+  if (!entry || (mood && entry.mood !== mood)) return;
+  const rest = mood ? topActive(entry.under, now) : null;
+  if (rest) gestures.set(key, rest);
+  else gestures.delete(key);
+}
+
+/** 今のしぐさの気分を返します。時間切れのしぐさは消し、下に続いているしぐさがなければ null を返して元の状態の表示に戻します */
 export function gestureOf(id, now = Date.now()) {
   const key = String(id);
   const entry = gestures.get(key);
-  const mood = activeGesture(entry, now);
-  if (entry && !mood) gestures.delete(key);
-  return mood;
+  const active = topActive(entry, now);
+  if (!active) gestures.delete(key);
+  else if (active !== entry) gestures.set(key, active);
+  return active ? active.mood : null;
+}
+
+/**
+ * ids（一覧にあるエージェントの ID の列）にないエージェントのしぐさを消します。
+ * gestureOf は描画のたびに問い合わせられたときだけ時間切れのしぐさを消すため、喜んでいる最中に削除されたエージェントのしぐさは、
+ * 問い合わせられることがなくなって Map に残り続けます。一覧が更新されるたびに app.js から呼んで片付けます
+ */
+export function retainGestures(ids) {
+  const keep = new Set([...ids].map(String));
+  for (const key of gestures.keys()) if (!keep.has(key)) gestures.delete(key);
+}
+
+// ---------- クリックの抑止 ----------
+
+/**
+ * ドラッグの終わりに続くクリックを止めるかを決める見張りを作ります。
+ * ちゅーるを一覧の猫の上で離すと、続くクリックが一覧の項目に届いてエージェントの選択が変わることがあるため、
+ * 離した直後の短い間に届いた、ちゅーるか一覧に向けたクリックを 1 回だけ止めます。
+ * 一覧の外のクリック（別の操作）は止めず、1 回止めたら見張りを解きます。無関係な操作のクリックまで止めないようにするためです
+ */
+export function createClickGuard(ms = CLICK_GUARD_MS) {
+  let until = 0;
+  return {
+    /** ドラッグを終えた時刻 now から見張りを始めます */
+    arm(now) {
+      until = now + ms;
+    },
+    /** now に届いたクリックを止めるかを返します。related はクリックの先がちゅーるか一覧の中かです */
+    take(now, related) {
+      if (!related || now >= until) return false;
+      until = 0;
+      return true;
+    },
+  };
 }
 
 // ---------- ちゅーるの絵 ----------
@@ -111,8 +173,9 @@ export function drawChuru(canvas) {
  */
 export function mountChuru(el, listRoot) {
   drawChuru(el);
+  el.style.setProperty('--churu-return', `${RETURN_MS}ms`);
   let drag = null;
-  let suppressClickUntil = 0;
+  const clickGuard = createClickGuard();
 
   const tip = () => {
     const r = el.getBoundingClientRect();
@@ -141,8 +204,8 @@ export function mountChuru(el, listRoot) {
     lickTarget(null);
     drag = null;
     // ドラッグの終わりに続くクリックが一覧の項目に届き、エージェントの選択が変わらないようにします。
-    // ポインタを捕捉していれば通常はちゅーる自身に届きますが、ブラウザによる違いに備えて少しの間だけ止めます
-    suppressClickUntil = performance.now() + 400;
+    // ポインタを捕捉していれば通常はちゅーる自身に届きますが、ブラウザによる違いに備えて少しの間だけ見張ります
+    clickGuard.arm(performance.now());
     if (fedId) {
       setGesture(fedId, 'delight', Date.now() + DELIGHT_MS);
       reset();
@@ -186,7 +249,8 @@ export function mountChuru(el, listRoot) {
   window.addEventListener(
     'click',
     (e) => {
-      if (performance.now() >= suppressClickUntil) return;
+      const related = e.target instanceof Node && (el.contains(e.target) || listRoot.contains(e.target));
+      if (!clickGuard.take(performance.now(), related)) return;
       e.stopPropagation();
       e.preventDefault();
     },

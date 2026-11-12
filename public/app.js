@@ -11,7 +11,7 @@ import { effortChangeBlockReason } from './effort.js';
 import { exitBlockReason } from './exit.js';
 import { usageReceivedLabel, usageRows } from './usage.js';
 import { isTurnBusy, itemTime, turnDurations, turnLabel, turnTitle } from './timeline.js';
-import { mountChuru } from './churu.js';
+import { mountChuru, retainGestures } from './churu.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -140,6 +140,8 @@ function onAgents(list) {
   }
   firstLoad = false;
   agents = list;
+  // 削除されたエージェントの猫のしぐさ（ちゅーるモード）を片付けます
+  retainGestures(list.map((a) => a.id));
   if (!selected()) {
     // 選んでいたエージェントが削除された場合などです。選択を移すだけでは、移った先の会話を読み直さないことがあり
     // （最後のイベントの時刻が前回の表示時と同じ場合）、前のエージェントの会話や仕分けボードが残るため、select で表示を消してから切り替えます
@@ -151,7 +153,7 @@ function onAgents(list) {
       save('selectedId', null);
       setSelectedSub(null);
       $('#chat').innerHTML = '';
-      $('#term').textContent = '';
+      setTermText('');
       closeTriage();
     }
   }
@@ -624,9 +626,9 @@ function renderChat(items) {
         : '';
       html += `<div class="msg user">${note}${esc(it.text)}${thumbsHtml(selectedId, it.images)}${timeHtml(it, 'msg-time')}</div>`;
     }
-    else if (it.role === 'question') html += questionHistory(it);
-    else if (it.role === 'plan') html += planHistory(it);
-    else if (it.role === 'todos') html += todosHistory(it);
+    else if (it.role === 'question') html += questionHistory(it, timeHtml(it, 'hcard-time'));
+    else if (it.role === 'plan') html += planHistory(it, timeHtml(it, 'hcard-time'));
+    else if (it.role === 'todos') html += todosHistory(it, timeHtml(it, 'hcard-time'));
     else if (it.role === 'compact') {
       // 圧縮の要約は長いため、既定では閉じておき、必要なときだけ本文を開けるようにします。
       // 再描画で開閉状態を保てるよう、項目ごとに変わらない時刻を data-key に使います
@@ -645,15 +647,25 @@ function renderChat(items) {
   el.dataset.agent = viewKey();
 }
 
+/**
+ * ターミナルタブの表示を書き換えます。画面の取得を拒否した理由のような説明（note）は、画面の写しとは違って
+ * 1 行の長い文なので、画面の写し用の折り返さない表示のままだと右端が切れて読めません。説明のときだけ折り返して表示します
+ */
+function setTermText(text, { note = false } = {}) {
+  const el = $('#term');
+  el.textContent = text;
+  el.classList.toggle('term-note', note);
+}
+
 async function pollScreen() {
   const a = selected();
   if (tab !== 'term' || !a || document.hidden || selectedSub) return;
   try {
     const { text } = await api('GET', `/api/agents/${a.id}/screen`);
-    if (a.id === selectedId) $('#term').textContent = text || '（表示できる画面がありません）';
+    if (a.id === selectedId) setTermText(text || '（表示できる画面がありません）');
   } catch (e) {
     // ペインが別のエージェントのものだった場合は、前の画面を残さず理由を表示します（別のエージェントの画面と取り違えないためです）
-    if (e.code === 'foreign-pane' && a.id === selectedId) $('#term').textContent = e.message;
+    if (e.code === 'foreign-pane' && a.id === selectedId) setTermText(e.message, { note: true });
   }
 }
 
@@ -673,7 +685,7 @@ function select(id) {
   renderList();
   renderDetail();
   $('#chat').innerHTML = '';
-  $('#term').textContent = '';
+  setTermText('');
   closeTriage();
   loadTranscript();
   pollScreen();

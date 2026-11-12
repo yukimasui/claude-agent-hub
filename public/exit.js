@@ -9,6 +9,9 @@ export const EXIT_COMMAND = '/exit';
 // 二重に送ったり、終わりかけのプロセスに別の入力を送ったりしないよう、送信ガード（lib/queue.js の sendBlockReason）でも使います
 export const EXITING_REASON = '終了を指示しています。プロセスが終わるまでお待ちください。';
 
+// セッションは終わった（SessionEnd が届いた）が、プロセスがまだ残っている間の理由です
+export const ENDING_REASON = '終了処理中です。プロセスが終わるまでお待ちください。';
+
 /**
  * 動いているエージェントに終了（/exit）を送れない理由を返します（送ってよければ null）。
  * /exit はプロンプトに入力して送るため、入力が別の場所に入る状態（回答待ちのダイアログ、ターミナルのダイアログ、起動中の信頼確認など）では送りません。
@@ -25,6 +28,10 @@ export function exitBlockReason(a) {
   if (a.state === 'waiting') return 'ターミナルでダイアログが表示されています。ターミナルタブで確認してください。';
   if (a.state === 'starting') return '起動中です（信頼確認などのダイアログが表示されている可能性があります）。ターミナルタブで確認してください。';
   if (a.state === 'running' || a.state === 'compacting') return '作業中です。中断（Esc）してから終了してください。';
+  // SessionEnd が届いてから、生存確認でプロセスの終わりを確かめて「停止」になるまでの短い間です。
+  // ボタンが無効になる理由を「応答完了か待機中のとき」と示すと、終わりかけのエージェントに何かが必要なように読めるため、
+  // 終了の途中であることをそのまま伝えます
+  if (a.state === 'ended') return ENDING_REASON;
   if (a.state !== 'done' && a.state !== 'idle') return '状態が「応答完了」か「待機中」のときに終了できます。';
   return null;
 }

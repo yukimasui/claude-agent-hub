@@ -144,3 +144,51 @@ test('目印のある最後のターンは、実行中でも終わったもの�
   const items = [user(at(12, 10, 0)), { ...assistant(at(12, 10, 1)), turnEnd: true }, tool(at(12, 10, 20))];
   assert.deepEqual([...turnDurations(items, { busy: true }).keys()], [1]);
 });
+
+test('目印のない記録で、ツールの実行中に届いた完了通知はターンを区切らない', () => {
+  // ツールの結果を待つ間に通知が届き、その後も同じターンが続く場合です。区切ると後半だけの短い所要時間が出てしまいます
+  const items = [
+    user(at(12, 10, 0)),
+    tool(at(12, 10, 1)),
+    system(at(12, 10, 2), 'notification', '完了通知: 調査'),
+    tool(at(12, 10, 3)),
+    assistant(at(12, 10, 5)),
+  ];
+  const turns = turnDurations(items);
+  assert.deepEqual([...turns.keys()], [4]);
+  assert.equal(turns.get(4).ms, 5 * 60_000);
+});
+
+test('目印のない記録で、発言への応答の前に届いた完了通知はターンを区切らない', () => {
+  // 続けて届いた 2 つの通知も、1 つのターンにまとめます
+  const items = [
+    system(at(12, 10, 0), 'notification', '完了通知: 1'),
+    system(at(12, 10, 1), 'notification', '完了通知: 2'),
+    assistant(at(12, 10, 2)),
+  ];
+  const turns = turnDurations(items);
+  assert.deepEqual([...turns.keys()], [2]);
+  assert.equal(turns.get(2).ms, 2 * 60_000);
+  assert.deepEqual([...turnDurations([user(at(12, 10, 0)), system(at(12, 10, 1), 'notification'), assistant(at(12, 10, 3))]).keys()], [2]);
+});
+
+test('目印のない記録で、本文の応答で終わったターンや応答のないコマンドの後に届いた完了通知は新しいターンにする', () => {
+  const afterReply = [user(at(12, 10, 0)), assistant(at(12, 10, 1)), system(at(12, 10, 30), 'notification'), assistant(at(12, 10, 32))];
+  assert.deepEqual(
+    [...turnDurations(afterReply).entries()].map(([k, d]) => [k, d.ms]),
+    [
+      [1, 60_000],
+      [3, 2 * 60_000],
+    ],
+  );
+  const afterCommand = [system(at(12, 10, 0), 'command', '/clear'), system(at(12, 10, 30), 'notification'), assistant(at(12, 10, 31))];
+  assert.equal(turnDurations(afterCommand).get(2).ms, 60_000);
+});
+
+test('目印のある記録では、目印の後に届いた完了通知を新しいターンにする', () => {
+  // 最後の応答がツールの呼び出しでも、目印があればターンは終わっています
+  const items = [user(at(12, 10, 0)), { ...tool(at(12, 10, 1)), turnEnd: true }, system(at(12, 10, 30), 'notification'), assistant(at(12, 10, 31))];
+  const turns = turnDurations(items);
+  assert.equal(turns.get(1).ms, 60_000);
+  assert.equal(turns.get(3).ms, 60_000);
+});
