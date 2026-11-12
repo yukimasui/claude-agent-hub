@@ -8,6 +8,7 @@ import { thumbsHtml } from './images.js';
 import { SUB_STATE_LABEL, ancestorsOf, subagentCounts, subagentRows } from './subagents.js';
 import { contextOver, contextTitle, formatContext, handoffBlockReason, handoffStageLabel, isHandoffActive } from './handoff.js';
 import { effortChangeBlockReason } from './effort.js';
+import { usageReceivedLabel, usageRows } from './usage.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -39,6 +40,9 @@ let pendingSig = '';
 let forceScroll = false;
 // サーバの設定（/api/info）です。コンテキスト量の目安（contextWarnTokens）を目印の判定に使います
 let hubInfo = {};
+// 利用上限の使用率（サーバの usage イベント）です。null は値を受け取っていないことを表します
+let usage = null;
+let usageHtml = '';
 
 // ---------- ユーティリティ ----------
 
@@ -101,6 +105,10 @@ const viewKey = () => `${selectedId}/${selectedSub || ''}`;
 function connect() {
   const es = new EventSource('/api/stream');
   es.addEventListener('agents', (e) => onAgents(JSON.parse(e.data)));
+  es.addEventListener('usage', (e) => {
+    usage = JSON.parse(e.data);
+    renderUsage();
+  });
   es.onopen = () => $('#conn').classList.add('on');
   es.onerror = () => $('#conn').classList.remove('on');
 }
@@ -168,6 +176,33 @@ function notify(title, body, id) {
 }
 
 // ---------- 描画 ----------
+
+/** 利用上限の使用率のバーです。残り時間の表記を進めるため定期的にも呼ばれるので、内容が変わったときだけ書き換えます（ツールチップが消えないようにするため） */
+function renderUsage() {
+  const now = Date.now();
+  let html;
+  if (!usage) {
+    html = `<div class="usage-empty" title="claude.ai のプランでログインしたエージェントが応答すると、5 時間の枠と週の枠の使用率を表示します。API キーでの利用では表示されません">利用上限: 不明（まだ受け取っていません）</div>`;
+  } else {
+    const rows = usageRows(usage, now)
+      .map((r) => {
+        // 値のない枠とリセットを過ぎた枠は、誤った使用率に見えないようバーを出さず、状態の文言だけを表示します
+        const body =
+          r.status === 'ok'
+            ? `<div class="usage-bar" role="meter" aria-label="${esc(r.label)}の枠の使用率" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${r.percent}"><i style="width:${r.width}%"></i></div><span class="usage-pct">${esc(r.text)}</span>`
+            : `<span class="usage-note">${esc(r.text)}</span>`;
+        return `<div class="usage-row is-${r.status}${r.level ? ` lv-${r.level}` : ''}${r.stale ? ' stale' : ''}" title="${esc(r.title)}">
+          <span class="usage-label">${esc(r.label)}</span>${body}
+          ${r.reset ? `<span class="usage-reset">${esc(r.reset)}</span>` : ''}
+        </div>`;
+      })
+      .join('');
+    html = `${rows}<div class="usage-foot">利用上限 · ${esc(usageReceivedLabel(usage, now))}</div>`;
+  }
+  if (html === usageHtml) return;
+  usageHtml = html;
+  $('#usage').innerHTML = html;
+}
 
 function renderList() {
   const counts = {};
@@ -881,6 +916,7 @@ setInterval(() => {
   for (const el of document.querySelectorAll('.elapsed[data-since]')) el.textContent = elapsed(Number(el.dataset.since) || 0);
 }, 1000);
 setInterval(pollScreen, 800);
+setInterval(renderUsage, 30000);
 
 // ステータス行の帯と空画面の猫を用意します
 $('#d-cat').innerHTML = catCanvas({ seed: '', state: 'idle', w: 64, h: 16, scale: 2 });
@@ -888,6 +924,7 @@ $('#empty-cat').innerHTML = catCanvas({ seed: 'hub', coat: 'orange', state: 'idl
 mountCats($('#empty'));
 
 renderDetail();
+renderUsage();
 connect();
 api('GET', '/api/info')
   .then((info) => {

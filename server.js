@@ -23,8 +23,10 @@ import {
   PUBLIC_DIR,
   REQUESTS_DIR,
   RESPONSES_DIR,
+  STATUSLINE_SCRIPT,
   TMUX_SESSION,
   TOOL_EVENTS,
+  USAGE_FILE,
   WORKSPACES_DIR,
 } from './lib/config.js';
 import { Store, publicAgent } from './lib/store.js';
@@ -51,13 +53,18 @@ import { readContextTokens, readEffortChange, readLocalCommandOutputAt, readTran
 import { listSubagents, notificationsCaughtUp, readSubagentTranscript } from './lib/subagents.js';
 import { IMAGE_PATH_RE, checkImageRequest, checkRequest, httpError, listen, listenErrorMessage, sendImage, serveStatic } from './lib/http.js';
 import { watchDir } from './lib/watch.js';
+import { usageReader } from './lib/usage.js';
 
 const store = new Store();
 
 // ---------- 起動準備 ----------
 
 
-/** --settings で渡す hook 設定を生成します。グローバル設定は汚しません */
+/**
+ * --settings で渡す hook 設定を生成します。グローバル設定は汚しません。
+ * statusLine は、利用上限の使用率（rate_limits）を受け取るために加えます。利用者や作業ディレクトリの設定にある
+ * ステータスラインは、スクリプトが同じ入力で実行して表示を引き継ぎます（hooks/statusline.cjs）
+ */
 function writeHooksFile() {
   fs.mkdirSync(HUB_HOME, { recursive: true });
   const command = `${shq(process.execPath)} ${shq(HOOK_SCRIPT)}`;
@@ -72,7 +79,8 @@ function writeHooksFile() {
       ],
     ]),
   );
-  fs.writeFileSync(HOOKS_FILE, JSON.stringify({ hooks }, null, 2));
+  const statusLine = { type: 'command', command: `${shq(process.execPath)} ${shq(STATUSLINE_SCRIPT)}` };
+  fs.writeFileSync(HOOKS_FILE, JSON.stringify({ hooks, statusLine }, null, 2));
 }
 
 // 組み立ては lib/launch.js が行い、ここでは設定値を渡します
@@ -359,6 +367,15 @@ function broadcast() {
 }
 store.on('change', broadcast);
 
+// 利用上限の使用率です。エージェントの一覧とは別のイベントにし、変わったときだけ配ります
+const usage = usageReader(USAGE_FILE);
+const usageEvent = () => `event: usage\ndata: ${JSON.stringify(usage.current())}\n\n`;
+function refreshUsage() {
+  if (!usage.refresh()) return;
+  const data = usageEvent();
+  for (const res of sseClients) res.write(data);
+}
+
 // ---------- 送信ガードとタスクキュー ----------
 
 // 操作の受け付けは lib/queue.js が判断し、ここでは Store への反映と送信の開始だけを行います
@@ -619,6 +636,7 @@ async function api(req, res, url) {
   if (url.pathname === '/api/stream') {
     res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
     res.write(`event: agents\ndata: ${JSON.stringify(store.list().map(publicAgent))}\n\n`);
+    res.write(usageEvent());
     sseClients.add(res);
     const ping = setInterval(() => res.write(': ping\n\n'), 20000);
     req.on('close', () => {
@@ -732,6 +750,7 @@ const server = http.createServer(async (req, res) => {
 
 writeHooksFile();
 store.init();
+usage.refresh();
 await reconcile();
 // 復元した状態を tmux のステータス行にも反映します
 for (const a of store.list()) store.changed(a.id);
@@ -745,8 +764,10 @@ setInterval(() => store.list().forEach((a) => store.ingest(a.id)), 1500);
 setInterval(() => reconcile().catch(() => {}), 2000);
 // 引き継ぎの待ち時間の上限と、Stop の後に transcript へメモが書き込まれるのを待つ間は、イベントが届かなくても判定し直します。
 // コンテキスト量も、イベントの後に transcript へ書き込まれた応答を取りこぼさないよう定期的に確かめます（追記分だけを読みます）。
-// TUI で実行した /effort はフックのイベントを伴わないため、同じく定期的に確かめます
+// TUI で実行した /effort はフックのイベントを伴わないため、同じく定期的に確かめます。
+// 利用上限の記録もステータスラインから書かれ、イベントを伴わないため、ここで更新時刻を確かめます
 setInterval(() => {
+  refreshUsage();
   for (const a of store.list()) {
     refreshContext(a.id);
     refreshEffort(a.id);

@@ -9,7 +9,7 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 
 | パス | 役割 |
 |---|---|
-| `server.js` | HTTP サーバ（API・SSE・静的ファイル配信）。エージェントの作成・再起動・削除、送信ガード、タスクキューの自動送信、対話要求への回答の書き出し、ペインの生存確認、コンテキスト量の更新、「引き継いでリセット」の段階の実行（tmux への送信とメモの保存）、エフォートの変更（保存値の更新と `--resume` での起動し直し）と TUI での `/effort` への追従を行う |
+| `server.js` | HTTP サーバ（API・SSE・静的ファイル配信）。エージェントの作成・再起動・削除、送信ガード、タスクキューの自動送信、対話要求への回答の書き出し、ペインの生存確認、コンテキスト量の更新、「引き継いでリセット」の段階の実行（tmux への送信とメモの保存）、エフォートの変更（保存値の更新と `--resume` での起動し直し）と TUI での `/effort` への追従、利用上限の使用率の記録の読み込みと配信（SSE の `usage` イベント）を行う |
 | `lib/config.js` | 設定値の集約。**import した時点で環境変数を読む**ため、環境変数は import より前に設定する |
 | `lib/launch.js` | エージェントの起動に関わる値の検証と起動コマンドの組み立て。作成フォームのエフォートの検証（`effortOption`）、エフォートの変更の要求の検証（`requestedEffort`）、`--effort` などを付けた claude の起動コマンドの組み立て（`buildCommand`。設定値は引数で受け取る）、シェル用の引用（`shq`） |
 | `lib/store.js` | エージェント一覧と状態機械。イベント JSONL の追記分を読み（`ingest`）、`applyEvent` で状態・対話要求（`pending`）・キューの一時停止を更新する |
@@ -20,11 +20,13 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `lib/subagents.js` | サブエージェントの一覧と状態を、親のセッションの `subagents/` にある記録（meta.json と transcript）から組み立てる（`listSubagents`）。サブエージェントの会話の読み出し（`readSubagentTranscript`）もここで行い、`subagents/` の外を読まないよう確かめる |
 | `lib/tmux.js` | tmux 操作のラッパー（ウィンドウ作成とペインへのエージェント ID の付与、ペインの一覧とペインのプロセスの環境変数の読み出し（`readEnviron`。内容が空なら読めなかったものとする）、bracketed paste での送信とキー送信、画面取得、ウィンドウの削除・前面への表示・ステータス行の更新。これらは操作の直前にペイン（ウィンドウの操作ではウィンドウ内のペイン）の持ち主を確かめ、別のエージェントのものなら操作しない） |
 | `lib/panes.js` | tmux のペインがどのエージェントのものかの判定。ペインの一覧の解釈（`parsePanes`。ペインのオプション `@hub_agent` か、プロセスの環境変数 `AGENT_HUB_AGENT` で持ち主を求める）と、各エージェントがペインを持つか・別のエージェントのウィンドウを指しているかの判定（`resolvePanes`）。生存確認と起動し直しで使う。操作の直前に確かめたペインやウィンドウがそのエージェントのものかの判定（ペインは `paneTargetBlockReason`、ウィンドウは `windowTargetBlockReason`）もここで行う |
+| `lib/usage.js` | 利用上限の使用率の記録（`usage.json`）を画面に配る形にする（`normalizeUsage`）。ファイルが変わったときだけ読み直す（`usageReader`） |
 | `lib/watch.js` | フォルダの監視（`fs.watch`）。error やフォルダの削除で監視が止まったら、落ちずに張り直す |
 | `lib/http.js` | HTTP 要求の確認（Host・Origin を見る `checkRequest`、画像 API 用の `checkImageRequest`）、エラーの組み立て（`httpError`）、画像の送信（`sendImage`）、静的ファイルの配信（`serveStatic`。ETag を `staticEtag` で作り、`isNotModified` が一致を判定して 304 を返す）、待ち受けの開始（`listen`。失敗の理由は `listenErrorMessage` でメッセージにする） |
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |
+| `hooks/statusline.cjs` | ステータスラインのコマンド。渡された JSON の `rate_limits` を取り出して（`pickRateLimits`）、古い値で戻さないよう枠ごとにまとめて（`mergeUsage`）`usage.json` に記録する。受け取った時刻は API の応答があったとき（`isFresh`）か値が新しくなったときだけ進める。利用者や作業ディレクトリの設定にあるステータスライン（`userStatusLine`）を同じ入力で実行して出力をそのまま表示する |
 | `hooks/summarize.cjs` | ツール入力の 1 行要約（hook とサーバの両方から使う） |
-| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`handoff.js`（コンテキスト量の表記と、「引き継いでリセット」を実行できるかの判定。サーバも使う）、`effort.js`（エフォートの選択肢、変更できるかの判定（`effortChangeBlockReason`）、TUI での変更を保存値に反映するかの判定（`effortToFollow`）。サーバも使う）、`app.js` |
+| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`handoff.js`（コンテキスト量の表記と、「引き継いでリセット」を実行できるかの判定。サーバも使う）、`effort.js`（エフォートの選択肢、変更できるかの判定（`effortChangeBlockReason`）、TUI での変更を保存値に反映するかの判定（`effortToFollow`）。サーバも使う）、`usage.js`（利用上限のバーの表示内容と時刻の表記）、`app.js` |
 | `public/vendor/` | 利用者の了承を得て同梱しているブラウザ用ライブラリ（現在は mermaid）。配布ファイルを改変せずに置き、取得元・照合方法・更新手順は各ディレクトリの `README.md` に記載する |
 | `test/` | `node:test` による単体テスト（Claude を起動しない） |
 | `scripts/dev.mjs` | 開発用ハブのランチャー |

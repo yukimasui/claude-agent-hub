@@ -50,6 +50,21 @@ button.link { background: none; border: none; padding: 0; color: var(--accent); 
 .conn.on { background: var(--done); }
 .summary { display: flex; gap: 10px; padding: 8px 14px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .summary b { color: var(--text); }
+/* 利用上限の使用率です。アカウント単位の値なので、エージェントの詳細ではなく一覧の上に置きます */
+.usage { display: grid; gap: 5px; padding: 8px 14px; font-size: 12px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.usage-row { min-width: 0; display: grid; grid-template-columns: 34px 1fr 44px; align-items: center; column-gap: 8px; --lv: var(--idle); }
+.usage-row.lv-warn { --lv: var(--running); }
+.usage-row.lv-high { --lv: var(--waiting); }
+.usage-label { color: var(--text); }
+.usage-bar { height: 8px; border-radius: 4px; background: var(--bg); border: 1px solid var(--line); overflow: hidden; }
+.usage-bar > i { display: block; height: 100%; background: var(--lv); }
+.usage-pct { font-family: var(--mono); color: var(--text); text-align: right; white-space: nowrap; }
+.usage-row.is-ok .usage-pct { color: var(--lv); }
+.usage-note { grid-column: 2 / 4; }
+.usage-reset { grid-column: 2 / 4; font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 受け取ってから時間がたった値は、現在の値と見誤らないよう薄く表示します */
+.usage-row.stale { opacity: 0.55; }
+.usage-foot { font-size: 11px; }
 .agent-list { list-style: none; margin: 0; padding: 6px; overflow-y: auto; flex: 1; }
 .agent {
   position: relative;
@@ -167,6 +182,9 @@ dialog.image-viewer { width: fit-content; max-width: 96vw; max-height: 96vh; pad
 @media (max-width: 760px) {
   .app { grid-template-columns: 1fr; grid-template-rows: 40vh 1fr; }
   .detail-head { flex-wrap: wrap; }
+  /* 一覧の高さが限られるため、利用上限の 2 つの枠を横に並べて縦の幅を抑えます */
+  .usage { grid-template-columns: 1fr 1fr; column-gap: 16px; }
+  .usage-foot { grid-column: 1 / -1; }
 }
 
 /* ---------- Markdown ---------- */
