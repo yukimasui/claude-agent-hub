@@ -10,6 +10,7 @@ import { contextOver, contextTitle, formatContext, handoffBlockReason, handoffSt
 import { effortChangeBlockReason } from './effort.js';
 import { exitBlockReason } from './exit.js';
 import { usageReceivedLabel, usageRows } from './usage.js';
+import { isTurnBusy, itemTime, turnDurations, turnLabel, turnTitle } from './timeline.js';
 
 const $ = (s) => document.querySelector(s);
 
@@ -159,7 +160,10 @@ function onAgents(list) {
   renderDetail();
   const a = selected();
   // サブエージェントの会話は記録ファイルの更新時刻、親エージェントの会話は最後のイベントの時刻が変わったときに読み直します
-  const stamp = selectedSub ? selectedSubagent()?.updatedAt : a?.lastEventAt;
+  // サブエージェントは記録が変わらないまま状態だけが変わる（完了する）ことがあるため、状態も含めます。
+  // 会話表示は最後のターンが終わったかどうかで所要時間を出し分けるためです
+  const sub = selectedSubagent();
+  const stamp = selectedSub ? `${sub?.updatedAt}/${sub?.state}` : a?.lastEventAt;
   if (a && seenEventAt.get(viewKey()) !== stamp) {
     seenEventAt.set(viewKey(), stamp);
     scheduleTranscript();
@@ -571,16 +575,37 @@ function renderChat(items) {
     if (tools.length) html += `<div class="tools">${tools.join('')}</div>`;
     tools = [];
   };
+  // 時刻の「今日」の判定は描画のたびの現在時刻で行います
+  const now = Date.now();
+  const timeHtml = (it, cls) => {
+    const t = itemTime(it.ts, now);
+    return t ? `<time class="${cls}" datetime="${t.iso}" title="${esc(t.title)}">${esc(t.text)}</time>` : '';
+  };
+  // 最後のターンが終わっていない間は、その所要時間を出しません（timeline.js の turnDurations）
+  const state = readOnly ? selectedSubagent()?.state : selected()?.state;
+  const turns = turnDurations(items, { busy: isTurnBusy(state) });
+  // ターンの最後の項目の後ろに所要時間を出します。ツールの行の途中で終わるターンもあるため、先にツールの行を閉じます
+  const turnEnd = (idx) => {
+    const d = turns.get(idx);
+    if (!d) return;
+    flush();
+    html += `<div class="turn-time${d.interrupted ? ' interrupted' : ''}" title="${esc(turnTitle(d))}">${esc(turnLabel(d))}</div>`;
+  };
   chatItems = items;
   for (const [idx, it] of items.entries()) {
     if (it.role === 'tool') {
-      tools.push(`<span class="tool${it.error ? ' error' : ''}" title="${esc(it.error || it.summary)}"><b>${esc(it.name)}</b> ${esc(it.summary)}</span>`);
+      // 時刻は要約が長くて省略される場合も見えるよう、要約とは別の要素にして右端に置きます
+      tools.push(
+        `<span class="tool${it.error ? ' error' : ''}" title="${esc(it.error || it.summary)}"><span class="tool-text"><b>${esc(it.name)}</b> ${esc(it.summary)}</span>${timeHtml(it, 'tool-time')}</span>`,
+      );
       // ツールが読んだ画像は、その呼び出しのすぐ後ろにサムネイルで表示します
       if (it.images) tools.push(thumbsHtml(selectedId, it.images));
+      turnEnd(idx);
       continue;
     }
     if (it.role === 'tool_error') {
-      tools.push(`<span class="tool error">${esc(it.text)}</span>`);
+      tools.push(`<span class="tool error"><span class="tool-text">${esc(it.text)}</span>${timeHtml(it, 'tool-time')}</span>`);
+      turnEnd(idx);
       continue;
     }
     flush();
@@ -588,7 +613,7 @@ function renderChat(items) {
       const triageable = !readOnly && !!parseProposals(it.text);
       html += `<div class="msg assistant md">${renderMarkdown(it.text)}${
         triageable ? `<div class="msg-tools"><button type="button" class="link triage-btn" data-idx="${idx}" title="項目をカードにして採用・却下・修正を仕分けます">仕分ける</button></div>` : ''
-      }</div>`;
+      }${timeHtml(it, 'msg-time')}</div>`;
     }
     else if (it.role === 'user') {
       // 処理中に送って途中で取り込まれた発言には、いつ指示したかを追えるように目印を付けます
@@ -596,7 +621,7 @@ function renderChat(items) {
       const note = it.queued
         ? '<div class="msg-note" title="エージェントの処理中に送られ、作業の途中で取り込まれた発言です。取り込まれた位置ではなく、送信した時刻の位置に表示しています">処理中に送信</div>'
         : '';
-      html += `<div class="msg user">${note}${esc(it.text)}${thumbsHtml(selectedId, it.images)}</div>`;
+      html += `<div class="msg user">${note}${esc(it.text)}${thumbsHtml(selectedId, it.images)}${timeHtml(it, 'msg-time')}</div>`;
     }
     else if (it.role === 'question') html += questionHistory(it);
     else if (it.role === 'plan') html += planHistory(it);
@@ -606,7 +631,8 @@ function renderChat(items) {
       // 再描画で開閉状態を保てるよう、項目ごとに変わらない時刻を data-key に使います
       html += `<details class="msg system compact" data-key="compact-${esc(it.ts || idx)}"><summary>会話を圧縮しました</summary><div class="compact-body">${esc(it.text)}</div></details>`;
     }
-    else html += `<div class="msg system">${esc(it.text)}</div>`;
+    else html += `<div class="msg system">${esc(it.text)}${timeHtml(it, 'sys-time')}</div>`;
+    turnEnd(idx);
   }
   flush();
   el.innerHTML = html;

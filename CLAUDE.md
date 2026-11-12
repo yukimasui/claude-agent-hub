@@ -26,7 +26,7 @@ Agent Hub 自身を開発するときの構成・ルール・検証方法をま�
 | `hooks/hub-hook.cjs` | Claude Code の hook。イベントを JSONL に追記し、対話イベントではブラウザからの回答を待つ |
 | `hooks/statusline.cjs` | ステータスラインのコマンド。渡された JSON の `rate_limits` を取り出して（`pickRateLimits`）、古い値で戻さないよう枠ごとにまとめて（`mergeUsage`）`usage.json` に記録する。受け取った時刻は API の応答があったとき（`isFresh`）か値が新しくなったときだけ進める。利用者や作業ディレクトリの設定にあるステータスライン（`userStatusLine`）を同じ入力で実行して出力をそのまま表示する |
 | `hooks/summarize.cjs` | ツール入力の 1 行要約（hook とサーバの両方から使う） |
-| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`handoff.js`（コンテキスト量の表記と、「引き継いでリセット」を実行できるかの判定。サーバも使う）、`effort.js`（エフォートの選択肢、変更できるかの判定（`effortChangeBlockReason`）、TUI での変更を保存値に反映するかの判定（`effortToFollow`）。サーバも使う）、`exit.js`（「終了」で `/exit` を送れるかの判定（`exitBlockReason`）。サーバも使う）、`usage.js`（利用上限のバーの表示内容と時刻の表記）、`app.js` |
+| `public/` | ブラウザ用の画面（ビルドなしの ES モジュール。`public/vendor/` を除く）。`md.js`（Markdown）、`triage.js`（提案の仕分け）、`cards.js`（回答待ちカード）、`images.js`（会話表示の画像のサムネイル）、`queue.js`、`cats.js`、`subagents.js`（サブエージェントのツリーの組み立て）、`handoff.js`（コンテキスト量の表記と、「引き継いでリセット」を実行できるかの判定。サーバも使う）、`effort.js`（エフォートの選択肢、変更できるかの判定（`effortChangeBlockReason`）、TUI での変更を保存値に反映するかの判定（`effortToFollow`）。サーバも使う）、`exit.js`（「終了」で `/exit` を送れるかの判定（`exitBlockReason`）。サーバも使う）、`usage.js`（利用上限のバーの表示内容と時刻の表記）、`timeline.js`（会話表示の時刻の表記と、ターンごとの応答の所要時間の計算（`turnDurations`））、`app.js` |
 | `public/vendor/` | 利用者の了承を得て同梱しているブラウザ用ライブラリ（現在は mermaid）。配布ファイルを改変せずに置き、取得元・照合方法・更新手順は各ディレクトリの `README.md` に記載する |
 | `test/` | `node:test` による単体テスト（Claude を起動しない） |
 | `scripts/dev.mjs` | 開発用ハブのランチャー |

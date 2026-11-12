@@ -140,9 +140,19 @@ details.compact > summary { cursor: pointer; }
 details.compact[open] { align-self: stretch; }
 .compact-body { margin: 6px auto 0; max-width: 860px; max-height: 50vh; overflow-y: auto; text-align: left; color: var(--text); font-size: 12px; padding: 8px 12px; border: 1px dashed var(--line); border-radius: 6px; }
 .tools { align-self: flex-start; display: flex; flex-wrap: wrap; gap: 4px; max-width: 860px; }
-.tool { font-family: var(--mono); font-size: 11.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 1px 8px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tool { display: inline-flex; align-items: baseline; gap: 6px; font-family: var(--mono); font-size: 11.5px; color: var(--muted); border: 1px dashed var(--line); border-radius: 6px; padding: 1px 8px; max-width: 100%; box-sizing: border-box; }
+/* 長い要約は要約の部分だけを省略し、右端の時刻は常に見えるようにします */
+.tool-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tool b { color: var(--running); font-weight: 600; }
-.tool.error { color: var(--waiting); border-color: color-mix(in srgb, var(--waiting) 50%, transparent); white-space: pre-wrap; }
+.tool.error { color: var(--waiting); border-color: color-mix(in srgb, var(--waiting) 50%, transparent); }
+.tool.error .tool-text { white-space: pre-wrap; }
+
+/* 会話の時刻と所要時間です。本文やツールの要約の邪魔にならないよう、小さく薄く表示します */
+.msg-time { display: block; margin-top: 4px; text-align: right; font-size: 10.5px; color: var(--muted); font-family: var(--mono); white-space: nowrap; }
+.sys-time { margin-left: 8px; font-size: 10.5px; opacity: 0.75; }
+.tool-time { flex: none; font-size: 10px; opacity: 0.7; }
+.turn-time { align-self: flex-start; margin-top: -4px; font-size: 11px; color: var(--muted); font-family: var(--mono); }
+.turn-time.interrupted { color: color-mix(in srgb, var(--waiting) 70%, var(--muted)); }
 
 /* 会話内の画像のサムネイル。高さを固定して、画像の読み込み前後で会話の縦位置がずれないようにしています */
 .thumbs { display: flex; flex-wrap: wrap; gap: 6px; flex-basis: 100%; }

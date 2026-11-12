@@ -271,6 +271,50 @@ test('ターンの後に届いたタスクの完了通知は、利用者の発�
   );
 });
 
+test('システムの行には、ターンの区切りの判定に使う種類（コマンド・中断・完了通知）を付ける', () => {
+  // 会話表示の所要時間（public/timeline.js）は、本文ではなくこの種類でターンの区切りを判定します
+  const items = read([
+    user('<command-name>/effort</command-name>\n<command-args>high</command-args>'),
+    user('<local-command-stdout>Set effort level to high</local-command-stdout>'),
+    user([{ type: 'text', text: '[Request interrupted by user]' }]),
+    notification('Agent "調査" finished'),
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.text, i.kind]),
+    [
+      ['/effort high', 'command'],
+      ['Set effort level to high', undefined],
+      ['中断されました', 'interrupt'],
+      ['完了通知: Agent "調査" finished', 'notification'],
+    ],
+  );
+});
+
+test('turn_duration の行で、その時点の最後の項目にターンの終わりの目印を付ける', () => {
+  const turnDuration = { type: 'system', subtype: 'turn_duration', durationMs: 1000, timestamp: 't' };
+  const items = read([
+    user('依頼'),
+    assistant([{ type: 'text', text: '途中' }, toolUse('b1', 'Bash', { command: 'ls' })]),
+    user([toolResult('b1', 'ok')]),
+    assistant([{ type: 'text', text: '完了' }]),
+    turnDuration,
+    // サブエージェントからの報告（画面に出さない入力）で始まったターンの応答です
+    user('報告', { isMeta: true }),
+    assistant([{ type: 'text', text: '報告を確認しました' }]),
+    turnDuration,
+  ]);
+  assert.deepEqual(
+    items.map((i) => [i.text ?? i.name, !!i.turnEnd]),
+    [
+      ['依頼', false],
+      ['途中', false],
+      ['Bash', false],
+      ['完了', true],
+      ['報告を確認しました', true],
+    ],
+  );
+});
+
 test('利用者が入力した発言は、完了通知のタグで始まっていても利用者の発言として表示する', () => {
   const text = '<task-notification> の形式について教えてください';
   const items = read([user(text, { origin: { kind: 'human' } })]);
