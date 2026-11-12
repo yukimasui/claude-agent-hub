@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  ERROR_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
+  ERROR_PAUSE_NOTE, EXIT_UNCONFIRMED_PAUSE_NOTE, HANDOFF_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, MANUAL_PAUSE_NOTE, MAX_QUEUE, PROPOSAL_PAUSE_NOTE,
   STALE_REPLY_ANSWERED_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, CLEAR_UNCONFIRMED_PAUSE_NOTE, LOCAL_COMMAND_PAUSE_NOTE, LOCAL_COMMAND_WAIT_MS,
   applyQueueOp, clearFinished, clearPauseNote, dispatchSendStep, dispatchStartStep, hasOpenProposals, localCommandPatch, mayBeLocalCommand,
   proposalPauseNote, readyForNext, sendBlockReason,
@@ -258,8 +258,13 @@ test('提案以外の理由の一時停止は、判断を入れても解除し�
 });
 
 test('一時停止の理由の文言はそれぞれ異なる', () => {
-  // 理由は queueNote の文言で見分けるため、文言が重なると提案による一時停止と誤って判別されます
-  const notes = [PROPOSAL_PAUSE_NOTE, MANUAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE];
+  // 理由は queueNote の文言で見分けるため、文言が重なると提案による一時停止と誤って判別されます。
+  // 判断の追加で解除しない理由（/clear やコマンドの終了を確認できなかったときなど）や、引き継ぎの終了時に元へ戻すかの判定に使う理由も、
+  // ほかの理由と重なると解除や復元を誤るため、lib/queue.js で定義しているすべての理由を比べます
+  const notes = [
+    PROPOSAL_PAUSE_NOTE, MANUAL_PAUSE_NOTE, INTERRUPT_PAUSE_NOTE, ERROR_PAUSE_NOTE, HANDOFF_PAUSE_NOTE,
+    CLEAR_UNCONFIRMED_PAUSE_NOTE, LOCAL_COMMAND_PAUSE_NOTE, EXIT_UNCONFIRMED_PAUSE_NOTE, STALE_REPLY_NEW_PROPOSAL_NOTE, STALE_REPLY_ANSWERED_NOTE,
+  ];
   assert.equal(new Set(notes).size, notes.length);
   for (const note of notes) assert.ok(note, '空の文言は理由なしと区別できないため');
 });

@@ -419,6 +419,74 @@ test('引き継ぎの段階は agents.json に保存し、再起動後は復元�
   assert.equal(handoffStep(a).type, 'resume');
 });
 
+// ---------- キューから送ったスラッシュコマンドの見守りの復元 ----------
+
+/** キューからスラッシュコマンドを送った直後の状態を作り、見守りの情報を保存します（server.js の dispatchNext と同じ形です） */
+async function sendLocalCommand(at) {
+  const { localCommandPatch } = await import('../lib/queue.js');
+  const { store, id, emit } = setup();
+  const t0 = at - 10_000;
+  emit({ event: 'SessionStart', session_id: 's1', ts: t0 }, { event: 'UserPromptSubmit', prompt: '前のターン', ts: t0 + 1 }, { event: 'Stop', ts: t0 + 2 });
+  const watch = { at, stateSince: at + 150, turnStartedAt: at + 150, sessionId: 's1', command: '/cost', activity: 'キューから送信: /cost' };
+  store.patch(id, { state: 'running', activity: watch.activity, stateSince: watch.stateSince, turnStartedAt: watch.turnStartedAt, localCommandWatch: watch });
+  /** ハブを再起動したときと同じく、agents.json とイベントファイルから読み直します */
+  const restart = () => {
+    const restored = new Store();
+    restored.init();
+    return restored.get(id);
+  };
+  return { store, id, emit, watch, restart, localCommandPatch };
+}
+
+test('スラッシュコマンドの見守りの途中で再起動しても、送信の直後の「実行中」に戻し、続きから見守れる', async () => {
+  const at = Date.now() - 5000;
+  const { watch, restart, localCommandPatch } = await sendLocalCommand(at);
+  const a = restart();
+  // 見守りの情報を使わずに読み直すと、イベントに残る最後の状態（応答完了）に戻り、見守りなしにキューの次の項目が送られます
+  assert.equal(a.state, 'running');
+  assert.equal(a.stateSince, watch.stateSince);
+  assert.equal(a.turnStartedAt, watch.turnStartedAt);
+  assert.equal(a.activity, watch.activity);
+  assert.deepEqual(a.localCommandWatch, watch);
+  // 見守りは再起動の前と同じ基準で判定できます。止まっている間に出力が記録されていれば「待機中」に戻し、
+  // 記録がないまま待ち時間を過ぎていれば一時停止し、まだ待ち時間の内なら待ち続けます
+  assert.equal(localCommandPatch(a, watch, at + 3000, at + 6000).state, 'idle');
+  const paused = localCommandPatch(a, watch, null, at + 60_000);
+  assert.equal(paused.state, 'idle');
+  assert.equal(paused.queuePaused, true);
+  assert.equal(localCommandPatch(a, watch, null, at + 6000), undefined);
+});
+
+test('送信の後にイベントが届いていれば、再起動後もそのイベントで決まった状態に任せる', async () => {
+  const at = Date.now() - 5000;
+  // プロンプトとして展開されたコマンドです。送信の後に UserPromptSubmit と Stop が届いています
+  const { emit, watch, restart, localCommandPatch } = await sendLocalCommand(at);
+  emit({ event: 'UserPromptSubmit', prompt: '展開されたプロンプト', ts: at + 100 }, { event: 'Stop', ts: at + 2000 });
+  const a = restart();
+  assert.equal(a.state, 'done');
+  // 見守りの側は何も変えずに終えます（呼び出し側は見守りの情報を消します）
+  assert.equal(localCommandPatch(a, watch, null, at + 60_000), null);
+
+  // 実行中のまま再起動した場合も、イベントで始まったターンなので見守りの対象にしません
+  const b = await sendLocalCommand(at);
+  b.emit({ event: 'UserPromptSubmit', prompt: '展開されたプロンプト', ts: at + 100 });
+  const c = b.restart();
+  assert.equal(c.state, 'running');
+  assert.equal(c.turnStartedAt, at + 100);
+  assert.equal(b.localCommandPatch(c, b.watch, null, at + 60_000), null);
+});
+
+test('見守りの情報を消した後や、壊れた見守りの情報では、再起動しても「実行中」に戻さない', async () => {
+  const at = Date.now() - 5000;
+  const { store, id, restart } = await sendLocalCommand(at);
+  store.patch(id, { state: 'idle', localCommandWatch: null });
+  assert.equal(restart().state, 'done');
+  store.patch(id, { localCommandWatch: { at: 'x', command: '/cost' } });
+  const a = restart();
+  assert.equal(a.state, 'done');
+  assert.equal(a.localCommandWatch, null);
+});
+
 test('publicAgent は対話要求の内部情報をクライアントに渡さない', () => {
   const { store, id, emit } = setup();
   writeRequest('r-pub', { tool_name: 'Write', tool_input: { file_path: 'x' }, input_hash: 'hh' });

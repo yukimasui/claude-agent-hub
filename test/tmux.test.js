@@ -6,13 +6,13 @@ import os from 'node:os';
 import path from 'node:path';
 import { parsePanes } from '../lib/panes.js';
 
-let execWithInput, readEnviron, sendText, sendKey, capturePane, focusWindow, killWindow, setWindowState;
+let execWithInput, readEnviron, sendText, sendKey, capturePane, focusWindow, killWindow, setWindowState, setWindowStates, throttledLog, windowStateWriter;
 let home;
 before(async () => {
   // lib/config.js は import した時点で環境変数を読むため、本番や開発用のデータ置き場に触れないよう一時ディレクトリを指定します
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-hub-tmux-test-'));
   process.env.AGENT_HUB_HOME = home;
-  ({ execWithInput, readEnviron, sendText, sendKey, capturePane, focusWindow, killWindow, setWindowState } = await import('../lib/tmux.js'));
+  ({ execWithInput, readEnviron, sendText, sendKey, capturePane, focusWindow, killWindow, setWindowState, setWindowStates, throttledLog, windowStateWriter } = await import('../lib/tmux.js'));
 });
 after(() => fs.rmSync(home, { recursive: true, force: true }));
 
@@ -221,4 +221,168 @@ test('そのエージェントのウィンドウか、持ち主を確かめら�
       assert.deepEqual(calls, expected, `一覧: ${pane}`);
     }
   });
+});
+
+// ---------- ステータス行のまとめての書き込み ----------
+
+const line = (paneId, windowId, owner, pid = '') => [paneId, '0', windowId, pid, owner].join('\t');
+
+test('複数のステータス行は、ペインの一覧を 1 回だけ取って持ち主を確かめ、別のエージェントのウィンドウには書き込まない', async () => {
+  const lines = [line('%2', '@2', 'a1'), line('%3', '@3', 'a2'), line('%4', '@4', 'a3')].join('\n');
+  let results;
+  const calls = await withFakeTmux(lines, async () => {
+    results = await setWindowStates([
+      { windowId: '@2', state: 'running', agentId: 'a1' },
+      { windowId: '@3', state: 'done', agentId: 'a1' }, // @3 は a2 のウィンドウです
+      { windowId: '@4', state: 'waiting', agentId: 'a3' },
+    ]);
+  });
+  // ウィンドウごとに一覧を取っていた（list-panes が 3 回）ところを 1 回にします
+  assert.deepEqual(calls, ['list-panes', 'set-option', 'set-option']);
+  assert.equal(results[0], null);
+  assert.ok(isForeign(results[1]) && /ステータス行を更新しませんでした/.test(results[1].message));
+  assert.equal(results[2], null);
+});
+
+test('生存確認で取った一覧を渡すと、一覧を取り直さずにその一覧で持ち主を確かめる', async () => {
+  const panes = parsePanes([line('%2', '@2', 'a1'), line('%3', '@3', 'a2')].join('\n'), () => null);
+  let results;
+  const calls = await withFakeTmux(null, async () => {
+    results = await setWindowStates(
+      [
+        { windowId: '@2', state: 'running', agentId: 'a1' },
+        { windowId: '@3', state: 'running', agentId: 'a1' },
+      ],
+      panes,
+    );
+  });
+  assert.deepEqual(calls, ['set-option']);
+  assert.equal(results[0], null);
+  assert.ok(isForeign(results[1]));
+});
+
+test('一覧にないウィンドウは、そのウィンドウの一覧を取って確かめ、ハブのものではないウィンドウには書き込まない', async () => {
+  // ウィンドウ ID が、ハブのセッションの外にある利用者のウィンドウに割り当てられた場合です。
+  // セッション内の一覧にないからといって確かめずに書き込むと、利用者のウィンドウにハブの状態が残ります
+  const panes = parsePanes(line('%2', '@2', 'a1'), () => null);
+  await withExternalProcess(async (pid) => {
+    let results;
+    const calls = await withFakeTmux(line('%7', '@7', '', pid), async () => {
+      results = await setWindowStates(
+        [
+          { windowId: '@2', state: 'running', agentId: 'a1' },
+          { windowId: '@7', state: 'running', agentId: 'a1' },
+        ],
+        panes,
+      );
+    });
+    assert.deepEqual(calls, ['set-option', 'list-panes']);
+    assert.equal(results[0], null);
+    assert.ok(isForeign(results[1]));
+  });
+});
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('ステータス行の書き込みは、少し待ってからまとめ、続けて変わった状態は最後の状態だけを書く', async () => {
+  const agents = new Map([
+    ['a1', { windowId: '@1', state: 'running', agentId: 'a1' }],
+    ['a2', { windowId: '@2', state: 'running', agentId: 'a2' }],
+  ]);
+  const writes = [];
+  const writer = windowStateWriter((id) => agents.get(id) ?? null, { delay: 20, write: async (updates, panes) => writes.push({ updates: updates.map((u) => `${u.agentId}:${u.state}`), panes }) });
+  writer.mark('a1');
+  agents.get('a1').state = 'waiting';
+  writer.mark('a1');
+  writer.mark('a2');
+  assert.equal(writes.length, 0, '待つ間は書き込みません');
+  await wait(50);
+  assert.deepEqual(writes, [{ updates: ['a1:waiting', 'a2:running'], panes: undefined }]);
+  // 書き込んだ状態と同じなら書き直しません。一度変わってから戻った場合も同じです
+  writer.mark('a2');
+  agents.get('a1').state = 'done';
+  writer.mark('a1');
+  agents.get('a1').state = 'waiting';
+  writer.mark('a1');
+  await wait(50);
+  assert.equal(writes.length, 1);
+});
+
+test('生存確認の一覧を渡して待たずに書き込み、書き込みの途中に変わった状態は終わってから書く', async () => {
+  const agents = new Map([['a1', { windowId: '@1', state: 'running', agentId: 'a1' }]]);
+  const writes = [];
+  let release;
+  const writer = windowStateWriter((id) => agents.get(id) ?? null, {
+    delay: 20,
+    write: (updates, panes) => {
+      writes.push({ updates: updates.map((u) => `${u.agentId}:${u.state}`), panes });
+      return new Promise((r) => (release = r));
+    },
+  });
+  const panes = new Map();
+  writer.mark('a1');
+  const flushing = writer.flush(panes);
+  assert.deepEqual(writes, [{ updates: ['a1:running'], panes }]);
+  // 書き込みが終わる前に変わった状態は、重ねて書き込まず、終わってから書きます（古い状態が後から届かないようにするためです）
+  agents.get('a1').state = 'done';
+  writer.mark('a1');
+  await writer.flush(panes);
+  await wait(50);
+  assert.equal(writes.length, 1);
+  release();
+  await flushing;
+  await wait(50);
+  assert.deepEqual(writes[1], { updates: ['a1:done'], panes: undefined });
+  release();
+  // 削除されたかウィンドウがなくなったエージェントは忘れ、新しいウィンドウでは同じ状態でも書き込みます
+  agents.delete('a1');
+  writer.mark('a1');
+  agents.set('a1', { windowId: '@5', state: 'done', agentId: 'a1' });
+  writer.mark('a1');
+  await wait(50);
+  assert.deepEqual(writes[2], { updates: ['a1:done'], panes: undefined });
+  release();
+});
+
+// ---------- 持ち主の確認に失敗したときの記録 ----------
+
+test('持ち主の確認に失敗したら、対象と理由を記録し、同じ失敗は繰り返し記録しない', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  // ほかのテストの記録と重ならないよう、このテストだけで使う ID にします
+  await withFakeTmux(null, async () => {
+    await sendKey('%91', 'Enter', 'a1');
+    await capturePane('%91', 'a1');
+    await setWindowState('@91', 'running', 'a1');
+    await setWindowState('@91', 'done', 'a1');
+  });
+  const messages = warn.mock.calls.map((c) => String(c.arguments[0]));
+  // ペインとウィンドウで 1 回ずつです。理由には tmux のエラーの内容を含めます
+  assert.equal(messages.length, 2, messages.join('\n'));
+  assert.match(messages[0], /ペイン %91 の持ち主を確かめられませんでした.*display-message: can't find pane/);
+  assert.match(messages[1], /ウィンドウ @91 の持ち主を確かめられませんでした.*list-panes: can't find pane/);
+});
+
+test('tmux の応答に確かめたいペインの情報がないときも、理由を区別して記録する', async (t) => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  // 偽の tmux は %2 の情報を返すため、%92 の情報は応答に含まれません
+  const calls = await withFakeTmux(paneLine('a2'), () => sendKey('%92', 'Enter', 'a1'));
+  // 違うペインの持ち主では判定せず、確かめられなかったものとして送信します
+  assert.deepEqual(calls, ['display-message', 'send-keys']);
+  assert.equal(warn.mock.callCount(), 1);
+  assert.match(String(warn.mock.calls[0].arguments[0]), /ペイン %92 の持ち主を確かめられませんでした.*応答にペインの情報がありませんでした/);
+});
+
+test('記録の抑制は、同じ内容を一定時間に 1 回までにし、覚える件数にも上限を設ける', () => {
+  const logged = [];
+  const log = throttledLog((m) => logged.push(m), { interval: 1000, max: 2 });
+  assert.equal(log('a', 'A', 0), true);
+  assert.equal(log('a', 'A', 999), false);
+  // 別の内容は抑えません
+  assert.equal(log('b', 'B', 999), true);
+  // 一定時間が過ぎれば、同じ内容も改めて記録します
+  assert.equal(log('a', 'A', 1000), true);
+  // 上限を超えると最も前に記録したもの（b）を忘れるため、b は時間内でも改めて記録します
+  assert.equal(log('c', 'C', 1001), true);
+  assert.equal(log('b', 'B', 1002), true);
+  assert.deepEqual(logged, ['A', 'B', 'A', 'C', 'B']);
 });

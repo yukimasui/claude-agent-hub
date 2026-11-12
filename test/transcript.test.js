@@ -668,3 +668,23 @@ test('ローカルコマンドの出力の記録から、最後に記録され�
   ]));
   assert.equal(readLocalCommandOutputAt(file), Date.parse(T3));
 });
+
+test('存在しないコマンドの案内（Unknown command）も、ローカルコマンドの出力として時刻を返す', () => {
+  const T1 = '2026-11-12T02:12:54.668Z';
+  const T2 = '2026-11-12T02:13:20.022Z';
+  const T3 = '2026-11-12T02:14:00.000Z';
+  // Claude Code 2.1.322 で確認した形です。存在しないコマンドには出力の記録がなく、この案内だけが残ります
+  const info = (content, ts, extra = {}) => ({ type: 'system', subtype: 'informational', content, level: 'warning', isMeta: false, timestamp: ts, ...extra });
+  const file = write([
+    // 同じ subtype の別の案内や、利用者の発言・応答に含まれる同じ文言は、コマンドの出力ではありません
+    info('Compacted while idle, before the prompt cache expired', T1, { level: 'notice' }),
+    { ...user('Unknown command: /hello について教えて'), timestamp: T1 },
+    { ...assistant([{ type: 'text', text: 'Unknown command: と表示されます' }]), timestamp: T1 },
+    info('Unknown command: /side', T1, { isSidechain: true }),
+  ]);
+  assert.equal(readLocalCommandOutputAt(file), null);
+  fs.appendFileSync(file, toJsonl([info('Unknown command: /hello. Did you mean /help?', T2)]));
+  assert.equal(readLocalCommandOutputAt(file), Date.parse(T2));
+  fs.appendFileSync(file, toJsonl([info('Unknown command: /hello2', T3)]));
+  assert.equal(readLocalCommandOutputAt(file), Date.parse(T3));
+});

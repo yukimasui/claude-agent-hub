@@ -61,7 +61,6 @@ const store = new Store();
 
 // ---------- 起動準備 ----------
 
-
 /**
  * --settings で渡す hook 設定を生成します。グローバル設定は汚しません。
  * statusLine は、利用上限の使用率（rate_limits）を受け取るために加えます。利用者や作業ディレクトリの設定にある
@@ -247,14 +246,14 @@ async function deleteAgent(a) {
 
 // ---------- 監視ループ ----------
 
-// tmux のステータス行にも状態を反映します
-const tmuxState = new Map();
-store.on('change', (id) => {
+// tmux のステータス行にも状態を反映します。
+// 書き込む前に持ち主を確かめるため、状態が変わるたびに書き込むとそのたびにペインの一覧を取ることになります。
+// そこで lib/tmux.js の windowStateWriter で、少し待ってからまとめて書き込みます。生存確認（reconcile）が一覧を取った直後は、その一覧を使います
+const statusWriter = tmux.windowStateWriter((id) => {
   const a = store.get(id);
-  if (!a || !a.windowId || tmuxState.get(id) === a.state) return;
-  tmuxState.set(id, a.state);
-  tmux.setWindowState(a.windowId, a.state, a.id).catch(() => {});
+  return a && a.windowId ? { windowId: a.windowId, state: a.state, agentId: a.id } : null;
 });
+store.on('change', (id) => statusWriter.mark(id));
 
 // ---------- サブエージェント ----------
 
@@ -386,6 +385,8 @@ async function reconcile() {
     } else if (foreign) store.patch(a.id, clearIds);
     if (p && p.windowId !== a.windowId) store.patch(a.id, { windowId: p.windowId });
   }
+  // 「終了」にした分などのステータス行は、取ったばかりの一覧で持ち主を確かめて書き込み、一覧を取り直さずに済ませます
+  await statusWriter.flush(panes);
 }
 
 // ---------- HTTP ----------
@@ -463,14 +464,19 @@ async function dispatchNext(id, { force = false } = {}) {
     const sentAt = Date.now();
     await tmux.sendText(cur.paneId, item.text, id);
     const now = Date.now();
+    const activity = `キューから送信: ${item.text.replace(/\s+/g, ' ').slice(0, 60)}`;
+    if (mayBeLocalCommand(item.text)) sent = { at: sentAt, stateSince: now, turnStartedAt: now, sessionId: cur.sessionId, command: item.text.split(/\s/)[0], activity };
+    // 見守りの情報（localCommandWatch）は「実行中」にするのと同じ patch で保存します。見守りの途中でハブが止まっても、
+    // 再起動後に「実行中」へ戻して続きから見守れるようにするためです（lib/store.js の ingest、下の起動の処理）。
+    // スラッシュコマンドでなければ null にし、前の見守りの情報が残らないようにします
     store.patch(id, {
       queue: cur.queue.filter((x) => x.id !== item.id),
       state: 'running',
-      activity: `キューから送信: ${item.text.replace(/\s+/g, ' ').slice(0, 60)}`,
+      activity,
       stateSince: now,
       turnStartedAt: now,
+      localCommandWatch: sent,
     });
-    if (mayBeLocalCommand(item.text)) sent = { at: sentAt, stateSince: now, turnStartedAt: now, sessionId: cur.sessionId, command: item.text.split(/\s/)[0] };
   } finally {
     dispatching.delete(id);
   }
@@ -490,7 +496,8 @@ async function watchLocalCommand(id, sent) {
     const a = store.get(id);
     const fields = localCommandPatch(a, sent, a ? readLocalCommandOutputAt(a.transcriptPath) : null, Date.now());
     if (fields === undefined) continue;
-    if (fields) store.patch(id, fields);
+    // 見守りを終えたので、保存した見守りの情報も消します。残すと次の再起動で、終わったコマンドの「実行中」へ戻してしまうためです
+    store.patch(id, { ...fields, localCommandWatch: null });
     return;
   }
 }
@@ -792,6 +799,10 @@ writeHooksFile();
 store.init();
 usage.refresh();
 await reconcile();
+// キューから送ったスラッシュコマンドを見守っている途中でハブが止まった場合は、続きから見守ります。
+// 「実行中」への戻しはイベントの読み直し（lib/store.js の init）で済んでいるため、自動送信の判定（下の changed）より先に戻っています。
+// 止まっている間にコマンドの出力が記録されていれば「待機中」に戻してキューを進め、記録がないまま待ち時間を過ぎていれば一時停止します（localCommandPatch）
+for (const a of store.list()) if (a.localCommandWatch) watchLocalCommand(a.id, a.localCommandWatch).catch((e) => console.error(e));
 // 復元した状態を tmux のステータス行にも反映します
 for (const a of store.list()) store.changed(a.id);
 
